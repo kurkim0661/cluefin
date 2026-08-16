@@ -33,6 +33,7 @@ Responsibilities:
 - Run daily ingestion jobs.
 - Normalize provider responses into common daily tables.
 - Preserve raw provider payloads for replay and debugging.
+- Compute daily pattern-analysis features from stored market data.
 
 The package exposes a CLI:
 
@@ -116,8 +117,9 @@ Steps:
 7. Upsert stock reference rows in `market.stock_master`.
 8. Fetch daily investor trading, short selling, credit, and lending data when
    available from the selected provider.
-9. Store all raw provider payloads in `store.raw_api_events`.
-10. Mark the ingest run as `success` or `failed`.
+9. Compute daily features and pattern candidates for the resolved symbols.
+10. Store all raw provider payloads in `store.raw_api_events`.
+11. Mark the ingest run as `success` or `failed`.
 
 The workflow is append-friendly and idempotent by logical key. Re-running the
 same trade date should not create duplicate analytical facts after `FINAL` or
@@ -348,6 +350,132 @@ PARTITION BY toYYYYMM(trade_date)
 ORDER BY (base_currency, quote_currency, provider, trade_date);
 ```
 
+## Pattern Analysis Tables
+
+Pattern analysis is derived from stored daily facts. The system must not
+hard-code published success-rate claims. It stores pattern detections, feature
+context, and future outcome labels so the user can validate pattern performance
+against the local dataset.
+
+```sql
+CREATE TABLE market.daily_technical_features
+(
+    trade_date Date,
+    provider LowCardinality(String),
+    symbol String,
+    close Decimal(18, 4),
+    volume UInt64,
+    ma_20 Nullable(Decimal(18, 4)),
+    ma_50 Nullable(Decimal(18, 4)),
+    ma_200 Nullable(Decimal(18, 4)),
+    weekly_ma_50 Nullable(Decimal(18, 4)),
+    weekly_ma_200 Nullable(Decimal(18, 4)),
+    atr_14 Nullable(Decimal(18, 4)),
+    return_1d Nullable(Float64),
+    return_5d Nullable(Float64),
+    return_20d Nullable(Float64),
+    volume_ratio_20 Nullable(Float64),
+    htf_trend LowCardinality(String),
+    run_id UUID,
+    collected_at DateTime64(3, 'Asia/Seoul')
+)
+ENGINE = ReplacingMergeTree(collected_at)
+PARTITION BY toYYYYMM(trade_date)
+ORDER BY (symbol, provider, trade_date);
+```
+
+```sql
+CREATE TABLE market.daily_volume_profile_levels
+(
+    trade_date Date,
+    provider LowCardinality(String),
+    symbol String,
+    lookback_days UInt16,
+    source LowCardinality(String),
+    poc_price Nullable(Decimal(18, 4)),
+    value_area_low Nullable(Decimal(18, 4)),
+    value_area_high Nullable(Decimal(18, 4)),
+    bins_json String,
+    run_id UUID,
+    collected_at DateTime64(3, 'Asia/Seoul')
+)
+ENGINE = ReplacingMergeTree(collected_at)
+PARTITION BY toYYYYMM(trade_date)
+ORDER BY (symbol, provider, lookback_days, source, trade_date);
+```
+
+For daily-only ingestion, `daily_volume_profile_levels.source` is
+`daily_ohlcv_approximation`: historical daily volume is assigned to price bins
+using each candle's typical price. If a provider later supplies true price-level
+volume, the same table stores it with `source = 'provider'`.
+
+```sql
+CREATE TABLE market.daily_pattern_events
+(
+    trade_date Date,
+    provider LowCardinality(String),
+    symbol String,
+    pattern_name LowCardinality(String),
+    pattern_category LowCardinality(String),
+    direction LowCardinality(String),
+    detection_date Date,
+    breakout_date Nullable(Date),
+    retest_date Nullable(Date),
+    neckline_price Nullable(Decimal(18, 4)),
+    support_price Nullable(Decimal(18, 4)),
+    resistance_price Nullable(Decimal(18, 4)),
+    stop_price Nullable(Decimal(18, 4)),
+    target_price Nullable(Decimal(18, 4)),
+    confidence_score Float64,
+    feature_json String,
+    run_id UUID,
+    collected_at DateTime64(3, 'Asia/Seoul')
+)
+ENGINE = ReplacingMergeTree(collected_at)
+PARTITION BY toYYYYMM(trade_date)
+ORDER BY (symbol, provider, pattern_name, detection_date, trade_date);
+```
+
+```sql
+CREATE TABLE market.daily_pattern_outcomes
+(
+    detection_date Date,
+    provider LowCardinality(String),
+    symbol String,
+    pattern_name LowCardinality(String),
+    horizon_days UInt16,
+    entry_price Decimal(18, 4),
+    stop_price Nullable(Decimal(18, 4)),
+    target_price Nullable(Decimal(18, 4)),
+    max_high Decimal(18, 4),
+    min_low Decimal(18, 4),
+    close_at_horizon Nullable(Decimal(18, 4)),
+    target_hit UInt8,
+    stop_hit UInt8,
+    return_at_horizon Nullable(Float64),
+    run_id UUID,
+    collected_at DateTime64(3, 'Asia/Seoul')
+)
+ENGINE = ReplacingMergeTree(collected_at)
+PARTITION BY toYYYYMM(detection_date)
+ORDER BY (symbol, provider, pattern_name, horizon_days, detection_date);
+```
+
+Initial supported pattern candidates:
+
+- `inverse_head_and_shoulders`
+- `double_bottom`
+- `ascending_triangle`
+- `high_tight_flag`
+
+Initial confluence factors:
+
+- Higher-timeframe alignment from daily and weekly 50/200 moving averages.
+- Daily volume profile approximation: POC and value-area boundary proximity.
+- Retest confirmation after breakout, using reduced volume and support/resistance
+  flip checks.
+- Optional investor-flow confirmation from foreign and institutional net buying.
+
 ## DART Tables
 
 ```sql
@@ -456,6 +584,31 @@ WHERE r.trade_date = {trade_date:Date}
 ORDER BY ifNull(r.rank, 65535) ASC, r.symbol ASC, d.rcept_no ASC;
 ```
 
+Example: validate pattern outcomes by universe.
+
+```sql
+SELECT
+    e.pattern_name,
+    o.horizon_days,
+    count() AS detections,
+    avg(o.target_hit) AS target_hit_rate,
+    avg(o.return_at_horizon) AS avg_return
+FROM market.daily_pattern_events AS e
+INNER JOIN market.daily_pattern_outcomes AS o
+    ON e.provider = o.provider
+   AND e.symbol = o.symbol
+   AND e.pattern_name = o.pattern_name
+   AND e.detection_date = o.detection_date
+INNER JOIN market.daily_universe_members AS u
+    ON e.provider = u.provider
+   AND e.symbol = u.symbol
+   AND e.trade_date = u.trade_date
+WHERE u.universe_name = {universe_name:String}
+  AND e.trade_date BETWEEN {from:Date} AND {to:Date}
+GROUP BY e.pattern_name, o.horizon_days
+ORDER BY target_hit_rate DESC, detections DESC;
+```
+
 ## Error Handling
 
 - Every ingestion creates an `ingest_runs` row.
@@ -473,6 +626,10 @@ Unit tests use mocked provider clients and no network:
 - DDL generation includes all expected databases and tables.
 - Daily universe normalization maps provider payloads into stable records.
 - Re-running the same trade date inserts rows with the same logical keys.
+- Pattern feature generation computes moving averages, volume ratios, and
+  higher-timeframe trend labels from daily OHLCV.
+- Pattern outcome generation calculates target-hit, stop-hit, and horizon return
+  labels from future daily candles without look-ahead in detection records.
 - Optional endpoint failures do not fail core universe/OHLCV ingestion.
 - CLI parameter validation rejects invalid dates and unsupported providers.
 
@@ -484,6 +641,9 @@ plus real provider credentials.
 - Granularity is daily only.
 - Built-in presets can include trading amount top 50, but the schema supports
   any symbol universe.
+- Pattern analysis is part of the initial data model.
+- Volume profile is approximated from daily candles unless provider price-level
+  volume data is available.
 - Toss is supported as a first-class market data provider.
 - DART is used for disclosure and company-event joins.
 - Account and order APIs are excluded from the initial implementation.
