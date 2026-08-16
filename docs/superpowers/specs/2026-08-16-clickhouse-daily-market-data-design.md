@@ -1,10 +1,10 @@
-# ClickHouse Daily Top 50 Market Data Store Design
+# ClickHouse Daily Market Data Store Design
 
 ## Goal
 
 Build a single-server ClickHouse store for daily Korean stock research. The first
-production workflow stores the daily top 50 Korean stocks by trading amount and
-all supporting daily data needed for analysis.
+production workflow stores daily data for any requested stock universe and all
+supporting daily data needed for analysis.
 
 The store must support DART immediately, Toss Invest as a first-class market data
 provider, and KIS as an additional provider. Kiwoom remains optional and is not
@@ -38,9 +38,10 @@ The package exposes a CLI:
 
 ```bash
 uv run cluefin-store init
-uv run cluefin-store ingest daily-top50 --trade-date 20260816 --provider toss
-uv run cluefin-store ingest daily-top50-backfill --lookback-days 30 --provider toss
-uv run cluefin-store ingest daily-top50-backfill --from 20260716 --to 20260816 --provider toss
+uv run cluefin-store ingest daily-universe --trade-date 20260816 --provider toss --universe kr_trading_amount_top50
+uv run cluefin-store ingest daily-universe --trade-date 20260816 --provider toss --symbols 005930,000660
+uv run cluefin-store ingest daily-universe-backfill --lookback-days 30 --provider toss --universe kr_trading_amount_top50
+uv run cluefin-store ingest daily-universe-backfill --from 20260716 --to 20260816 --provider toss --symbols 005930,000660
 uv run cluefin-store ingest dart-disclosures --from 20260801 --to 20260816
 uv run cluefin-store doctor
 ```
@@ -71,25 +72,47 @@ Toss should be added as a reusable Python client under `packages/cluefin-openapi
 when practical, not hidden only inside `cluefin-store`. This keeps future CLI,
 desk, and analysis tools on the same provider wrapper.
 
+## Universe Model
+
+The store is built around a generic daily universe model. A universe is the set
+of symbols selected for one trade date.
+
+Supported universe resolvers:
+
+- `ranking`: provider ranking based, such as Korean trading amount top 50.
+- `symbols`: explicit symbols passed at the CLI.
+- `watchlist`: named local symbol lists.
+- `query`: later extension for SQL-driven re-ingestion from existing stored data.
+
+Built-in preset examples include:
+
+```text
+kr_trading_amount_top50
+```
+
+This preset means Korean stocks ranked by trading amount, limited to 50 symbols.
+It is one universe preset, not a table or workflow name. Explicit symbols are
+equally valid and use a generated or user-provided universe name.
+
 ## Daily Workflow
 
-The first workflow is `daily-top50`.
+The first workflow is `daily-universe`.
 
 Inputs:
 
 - `trade_date`
 - `provider`, default `toss`
 - `market_country`, default `KR`
-- `limit`, fixed at `50` for the first implementation
+- Either `universe` or explicit `symbols`
 
 Steps:
 
 1. Create an `ingest_runs` row.
-2. Fetch trading amount ranking top 50 for the trade date.
-3. Store ranking rows in `market.daily_trading_amount_top50`.
-4. Fetch daily OHLCV for all top 50 symbols.
+2. Resolve the requested universe into symbols for the trade date.
+3. Store universe membership rows in `market.daily_universe_members`.
+4. Fetch daily OHLCV for all resolved symbols.
 5. Store daily candles in `market.daily_ohlcv`.
-6. Fetch stock master details for all top 50 symbols.
+6. Fetch stock master details for all resolved symbols.
 7. Upsert stock reference rows in `market.stock_master`.
 8. Fetch daily investor trading, short selling, credit, and lending data when
    available from the selected provider.
@@ -102,7 +125,7 @@ latest-version selection.
 
 ## One-Month Backfill Workflow
 
-The default historical load is `daily-top50-backfill`.
+The default historical load is `daily-universe-backfill`.
 
 Inputs:
 
@@ -110,7 +133,7 @@ Inputs:
 - `lookback_days`, default `30`
 - Optional explicit `from` and `to` dates in `YYYYMMDD`
 - `market_country`, default `KR`
-- `limit`, fixed at `50` for the first implementation
+- Either `universe` or explicit `symbols`
 
 Steps:
 
@@ -118,17 +141,16 @@ Steps:
    calendar days ending at the requested or current date.
 2. Load the market calendar for `KR`.
 3. Keep only open trading days.
-4. Run `daily-top50` once per open trading day.
+4. Run `daily-universe` once per open trading day.
 5. Continue past per-day optional endpoint failures, but record each failed day
    in `store.ingest_runs`.
-6. Stop only when the provider cannot supply the core ranking or OHLCV data for
-   a day after configured retries.
+6. Stop only when the provider cannot resolve the requested universe or supply
+   core OHLCV data for a day after configured retries.
 
-If a provider cannot query historical top 50 rankings for an arbitrary trade
-date, the adapter must return a typed unsupported-capability error for that
-date. The backfill command records the failed run and continues to the next
-trading day. It must not silently substitute the current top 50 for historical
-dates.
+If a provider cannot query a historical ranking universe for an arbitrary trade
+date, the adapter must return a typed unsupported-capability error for that date.
+The backfill command records the failed run and continues to the next trading
+day. It must not silently substitute a current ranking for historical dates.
 
 ## Database Layout
 
@@ -145,6 +167,21 @@ dart
 - `dart`: disclosure and company event data.
 
 ## Store Tables
+
+```sql
+CREATE TABLE store.universe_definitions
+(
+    universe_name LowCardinality(String),
+    universe_type LowCardinality(String),
+    provider Nullable(LowCardinality(String)),
+    market_country LowCardinality(String),
+    params_json String,
+    is_active UInt8,
+    updated_at DateTime64(3, 'Asia/Seoul')
+)
+ENGINE = ReplacingMergeTree(updated_at)
+ORDER BY universe_name;
+```
 
 ```sql
 CREATE TABLE store.ingest_runs
@@ -183,26 +220,25 @@ ORDER BY (provider, endpoint, requested_at, request_hash);
 ## Market Tables
 
 ```sql
-CREATE TABLE market.daily_trading_amount_top50
+CREATE TABLE market.daily_universe_members
 (
     trade_date Date,
     provider LowCardinality(String),
+    universe_name LowCardinality(String),
+    universe_type LowCardinality(String),
+    universe_params_json String,
     market_country LowCardinality(String),
-    ranking_type LowCardinality(String),
-    rank UInt16,
+    rank Nullable(UInt16),
     symbol String,
     name String,
-    close_price Decimal(18, 4),
-    change_amount Decimal(18, 4),
-    change_rate Float64,
-    trading_volume UInt64,
-    trading_amount Decimal(24, 4),
+    selection_metric_name Nullable(LowCardinality(String)),
+    selection_metric_value Nullable(Decimal(24, 4)),
     run_id UUID,
     collected_at DateTime64(3, 'Asia/Seoul')
 )
 ENGINE = ReplacingMergeTree(collected_at)
 PARTITION BY toYYYYMM(trade_date)
-ORDER BY (trade_date, provider, ranking_type, symbol);
+ORDER BY (trade_date, provider, universe_name, symbol);
 ```
 
 ```sql
@@ -349,7 +385,7 @@ ORDER BY symbol;
 
 ## Analysis Queries
 
-Example: top 50 with daily momentum and investor flow.
+Example: any daily universe with daily momentum and investor flow.
 
 ```sql
 WITH ohlcv_with_return AS
@@ -381,12 +417,13 @@ SELECT
     r.rank,
     r.symbol,
     r.name,
-    r.trading_amount,
+    r.selection_metric_name,
+    r.selection_metric_value,
     o.close,
     o.daily_return,
     f.foreign_net_buy,
     f.institution_net_buy
-FROM market.daily_trading_amount_top50 AS r
+FROM market.daily_universe_members AS r
 LEFT JOIN ohlcv_with_return AS o
     ON r.trade_date = o.trade_date
    AND r.symbol = o.symbol
@@ -394,10 +431,11 @@ LEFT JOIN flow AS f
     ON r.trade_date = f.trade_date
    AND r.symbol = f.symbol
 WHERE r.trade_date >= today() - 30
-ORDER BY r.trade_date DESC, r.rank ASC;
+  AND r.universe_name = {universe_name:String}
+ORDER BY r.trade_date DESC, ifNull(r.rank, 65535) ASC, r.symbol ASC;
 ```
 
-Example: top 50 symbols with same-day DART disclosures.
+Example: any daily universe with same-day DART disclosures.
 
 ```sql
 SELECT
@@ -407,14 +445,15 @@ SELECT
     r.name,
     d.report_nm,
     d.rcept_no
-FROM market.daily_trading_amount_top50 AS r
+FROM market.daily_universe_members AS r
 LEFT JOIN dart.symbol_corp_map AS m
     ON r.symbol = m.symbol
 LEFT JOIN dart.daily_disclosures AS d
     ON r.trade_date = d.rcept_dt
    AND m.corp_code = d.corp_code
 WHERE r.trade_date = {trade_date:Date}
-ORDER BY r.rank ASC, d.rcept_no ASC;
+  AND r.universe_name = {universe_name:String}
+ORDER BY ifNull(r.rank, 65535) ASC, r.symbol ASC, d.rcept_no ASC;
 ```
 
 ## Error Handling
@@ -423,8 +462,8 @@ ORDER BY r.rank ASC, d.rcept_no ASC;
 - Provider API responses are saved in `raw_api_events` before normalization when
   possible.
 - If one optional supporting endpoint fails, the job records the error and
-  continues with the core ranking/OHLCV path.
-- If the top 50 ranking fetch fails, the whole job fails.
+  continues with the core universe/OHLCV path.
+- If universe resolution fails, the whole job fails for that trade date.
 - Secrets are never logged or stored.
 
 ## Testing
@@ -432,9 +471,9 @@ ORDER BY r.rank ASC, d.rcept_no ASC;
 Unit tests use mocked provider clients and no network:
 
 - DDL generation includes all expected databases and tables.
-- Daily top 50 normalization maps provider payloads into stable records.
+- Daily universe normalization maps provider payloads into stable records.
 - Re-running the same trade date inserts rows with the same logical keys.
-- Optional endpoint failures do not fail core ranking/OHLCV ingestion.
+- Optional endpoint failures do not fail core universe/OHLCV ingestion.
 - CLI parameter validation rejects invalid dates and unsupported providers.
 
 Integration tests are marked `integration` and require a local ClickHouse server
@@ -443,7 +482,8 @@ plus real provider credentials.
 ## Open Questions Resolved
 
 - Granularity is daily only.
-- Initial universe is trading amount top 50.
+- Built-in presets can include trading amount top 50, but the schema supports
+  any symbol universe.
 - Toss is supported as a first-class market data provider.
 - DART is used for disclosure and company-event joins.
 - Account and order APIs are excluded from the initial implementation.
