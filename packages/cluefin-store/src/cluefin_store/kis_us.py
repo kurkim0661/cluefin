@@ -103,12 +103,12 @@ class KisUsMarketDataProvider:
 
 
 def _parse_period_quote_candle(symbol: str, candle: Any) -> DailyOhlcv:
-    trade_date = datetime.strptime(str(getattr(candle, "xymd")), "%Y%m%d").date()
-    open_price = _price(getattr(candle, "open"))
-    high_price = _price(getattr(candle, "high"))
-    low_price = _price(getattr(candle, "low"))
-    close_price = _price(getattr(candle, "clos"))
-    volume = int(Decimal(str(getattr(candle, "tvol"))).to_integral_value(rounding=ROUND_HALF_UP))
+    trade_date = datetime.strptime(str(candle.xymd), "%Y%m%d").date()
+    open_price = _price(candle.open)
+    high_price = _price(candle.high)
+    low_price = _price(candle.low)
+    close_price = _price(candle.clos)
+    volume = int(Decimal(str(candle.tvol)).to_integral_value(rounding=ROUND_HALF_UP))
     trading_amount = _decimal_or_none(getattr(candle, "tamt", None))
     if trading_amount is None:
         trading_amount = close_price * Decimal(volume)
