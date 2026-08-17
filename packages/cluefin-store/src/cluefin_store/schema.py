@@ -6,12 +6,13 @@ SCHEMA_STATEMENTS: tuple[str, ...] = (
     "CREATE DATABASE IF NOT EXISTS store",
     "CREATE DATABASE IF NOT EXISTS market",
     "CREATE DATABASE IF NOT EXISTS dart",
+    "CREATE DATABASE IF NOT EXISTS portfolio",
     """
     CREATE TABLE IF NOT EXISTS store.universe_definitions
     (
         universe_name LowCardinality(String),
         universe_type LowCardinality(String),
-        provider Nullable(LowCardinality(String)),
+        provider Nullable(String),
         market_country LowCardinality(String),
         params_json String,
         is_active UInt8,
@@ -64,7 +65,7 @@ SCHEMA_STATEMENTS: tuple[str, ...] = (
         rank Nullable(UInt16),
         symbol String,
         name String,
-        selection_metric_name Nullable(LowCardinality(String)),
+        selection_metric_name Nullable(String),
         selection_metric_value Nullable(Decimal(24, 4)),
         run_id UUID,
         collected_at DateTime64(3, 'Asia/Seoul')
@@ -137,10 +138,10 @@ SCHEMA_STATEMENTS: tuple[str, ...] = (
         provider LowCardinality(String),
         symbol String,
         name String,
-        market Nullable(LowCardinality(String)),
+        market Nullable(String),
         market_country LowCardinality(String),
-        currency Nullable(LowCardinality(String)),
-        security_type Nullable(LowCardinality(String)),
+        currency Nullable(String),
+        security_type Nullable(String),
         updated_at DateTime64(3, 'Asia/Seoul')
     )
     ENGINE = ReplacingMergeTree(updated_at)
@@ -182,12 +183,18 @@ SCHEMA_STATEMENTS: tuple[str, ...] = (
         symbol String,
         close Decimal(18, 4),
         volume UInt64,
+        vwap Nullable(Decimal(18, 4)),
         ma_20 Nullable(Decimal(18, 4)),
         ma_50 Nullable(Decimal(18, 4)),
         ma_200 Nullable(Decimal(18, 4)),
+        ema_20 Nullable(Decimal(18, 4)),
+        ema_50 Nullable(Decimal(18, 4)),
+        ema_200 Nullable(Decimal(18, 4)),
         weekly_ma_50 Nullable(Decimal(18, 4)),
         weekly_ma_200 Nullable(Decimal(18, 4)),
         atr_14 Nullable(Decimal(18, 4)),
+        rsi_14 Nullable(Float64),
+        rsi_divergence LowCardinality(String),
         return_1d Nullable(Float64),
         return_5d Nullable(Float64),
         return_20d Nullable(Float64),
@@ -200,6 +207,12 @@ SCHEMA_STATEMENTS: tuple[str, ...] = (
     PARTITION BY toYYYYMM(trade_date)
     ORDER BY (symbol, provider, trade_date)
     """,
+    "ALTER TABLE market.daily_technical_features ADD COLUMN IF NOT EXISTS vwap Nullable(Decimal(18, 4)) AFTER volume",
+    "ALTER TABLE market.daily_technical_features ADD COLUMN IF NOT EXISTS ema_20 Nullable(Decimal(18, 4)) AFTER ma_200",
+    "ALTER TABLE market.daily_technical_features ADD COLUMN IF NOT EXISTS ema_50 Nullable(Decimal(18, 4)) AFTER ema_20",
+    "ALTER TABLE market.daily_technical_features ADD COLUMN IF NOT EXISTS ema_200 Nullable(Decimal(18, 4)) AFTER ema_50",
+    "ALTER TABLE market.daily_technical_features ADD COLUMN IF NOT EXISTS rsi_14 Nullable(Float64) AFTER atr_14",
+    "ALTER TABLE market.daily_technical_features ADD COLUMN IF NOT EXISTS rsi_divergence LowCardinality(String) DEFAULT 'none' AFTER rsi_14",
     """
     CREATE TABLE IF NOT EXISTS market.daily_volume_profile_levels
     (
@@ -220,6 +233,111 @@ SCHEMA_STATEMENTS: tuple[str, ...] = (
     ORDER BY (symbol, provider, lookback_days, source, trade_date)
     """,
     """
+    CREATE TABLE IF NOT EXISTS market.symbol_sentiment_items
+    (
+        symbol String,
+        provider LowCardinality(String),
+        query String,
+        title String,
+        source Nullable(String),
+        url String,
+        published_at Nullable(DateTime64(3, 'Asia/Seoul')),
+        summary String,
+        sentiment_label LowCardinality(String),
+        sentiment_score Float64,
+        sentiment_reason String,
+        raw_json String,
+        run_id UUID,
+        collected_at DateTime64(3, 'Asia/Seoul')
+    )
+    ENGINE = ReplacingMergeTree(collected_at)
+    PARTITION BY toYYYYMM(collected_at)
+    ORDER BY (symbol, provider, url)
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS portfolio.paper_accounts
+    (
+        account_id String,
+        name String,
+        base_currency LowCardinality(String),
+        initial_cash Decimal(24, 4),
+        is_active UInt8,
+        created_at DateTime64(3, 'Asia/Seoul'),
+        updated_at DateTime64(3, 'Asia/Seoul')
+    )
+    ENGINE = ReplacingMergeTree(updated_at)
+    ORDER BY account_id
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS portfolio.paper_strategies
+    (
+        strategy_id String,
+        name String,
+        strategy_type LowCardinality(String),
+        config_json String,
+        is_active UInt8,
+        created_at DateTime64(3, 'Asia/Seoul'),
+        updated_at DateTime64(3, 'Asia/Seoul')
+    )
+    ENGINE = ReplacingMergeTree(updated_at)
+    ORDER BY strategy_id
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS portfolio.paper_backtest_runs
+    (
+        run_id UUID,
+        account_id String,
+        strategy_id String,
+        start_date Date,
+        end_date Date,
+        initial_cash Decimal(24, 4),
+        final_equity Decimal(24, 4),
+        total_return Float64,
+        max_drawdown Float64,
+        trade_count UInt32,
+        win_rate Float64,
+        params_json String,
+        created_at DateTime64(3, 'Asia/Seoul')
+    )
+    ENGINE = ReplacingMergeTree(created_at)
+    PARTITION BY toYYYYMM(created_at)
+    ORDER BY (account_id, strategy_id, run_id)
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS portfolio.paper_backtest_daily_equity
+    (
+        run_id UUID,
+        trade_date Date,
+        cash Decimal(24, 4),
+        positions_value Decimal(24, 4),
+        equity Decimal(24, 4),
+        drawdown Float64,
+        created_at DateTime64(3, 'Asia/Seoul')
+    )
+    ENGINE = ReplacingMergeTree(created_at)
+    PARTITION BY toYYYYMM(trade_date)
+    ORDER BY (run_id, trade_date)
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS portfolio.paper_backtest_trades
+    (
+        run_id UUID,
+        trade_date Date,
+        symbol String,
+        side LowCardinality(String),
+        quantity UInt64,
+        price Decimal(18, 4),
+        gross_amount Decimal(24, 4),
+        fee Decimal(24, 4),
+        realized_pnl Decimal(24, 4),
+        reason String,
+        created_at DateTime64(3, 'Asia/Seoul')
+    )
+    ENGINE = MergeTree
+    PARTITION BY toYYYYMM(trade_date)
+    ORDER BY (run_id, trade_date, symbol, side)
+    """,
+    """
     CREATE TABLE IF NOT EXISTS market.daily_pattern_events
     (
         trade_date Date,
@@ -237,6 +355,13 @@ SCHEMA_STATEMENTS: tuple[str, ...] = (
         stop_price Nullable(Decimal(18, 4)),
         target_price Nullable(Decimal(18, 4)),
         confidence_score Float64,
+        htf_trend LowCardinality(String),
+        volume_profile_confluence UInt8,
+        retest_confirmed UInt8,
+        confluence_score Float64,
+        poc_price Nullable(Decimal(18, 4)),
+        value_area_low Nullable(Decimal(18, 4)),
+        value_area_high Nullable(Decimal(18, 4)),
         feature_json String,
         run_id UUID,
         collected_at DateTime64(3, 'Asia/Seoul')
@@ -245,6 +370,13 @@ SCHEMA_STATEMENTS: tuple[str, ...] = (
     PARTITION BY toYYYYMM(trade_date)
     ORDER BY (symbol, provider, pattern_name, detection_date, trade_date)
     """,
+    "ALTER TABLE market.daily_pattern_events ADD COLUMN IF NOT EXISTS htf_trend LowCardinality(String) AFTER confidence_score",
+    "ALTER TABLE market.daily_pattern_events ADD COLUMN IF NOT EXISTS volume_profile_confluence UInt8 AFTER htf_trend",
+    "ALTER TABLE market.daily_pattern_events ADD COLUMN IF NOT EXISTS retest_confirmed UInt8 AFTER volume_profile_confluence",
+    "ALTER TABLE market.daily_pattern_events ADD COLUMN IF NOT EXISTS confluence_score Float64 AFTER retest_confirmed",
+    "ALTER TABLE market.daily_pattern_events ADD COLUMN IF NOT EXISTS poc_price Nullable(Decimal(18, 4)) AFTER confluence_score",
+    "ALTER TABLE market.daily_pattern_events ADD COLUMN IF NOT EXISTS value_area_low Nullable(Decimal(18, 4)) AFTER poc_price",
+    "ALTER TABLE market.daily_pattern_events ADD COLUMN IF NOT EXISTS value_area_high Nullable(Decimal(18, 4)) AFTER value_area_low",
     """
     CREATE TABLE IF NOT EXISTS market.daily_pattern_outcomes
     (
@@ -299,6 +431,50 @@ SCHEMA_STATEMENTS: tuple[str, ...] = (
     )
     ENGINE = ReplacingMergeTree(updated_at)
     ORDER BY symbol
+    """,
+    """
+    CREATE VIEW IF NOT EXISTS market.pattern_performance_summary AS
+    SELECT
+        o.provider AS provider,
+        o.pattern_name AS pattern_name,
+        e.pattern_category AS pattern_category,
+        o.horizon_days AS horizon_days,
+        e.htf_trend AS htf_trend,
+        e.volume_profile_confluence AS volume_profile_confluence,
+        e.retest_confirmed AS retest_confirmed,
+        count() AS sample_count,
+        avg(o.target_hit) AS target_hit_rate,
+        avg(o.stop_hit) AS stop_hit_rate,
+        avg(o.return_at_horizon) AS avg_return_at_horizon,
+        quantile(0.5)(o.return_at_horizon) AS median_return_at_horizon,
+        avg(e.confluence_score) AS avg_confluence_score
+    FROM market.daily_pattern_outcomes AS o
+    ANY LEFT JOIN market.daily_pattern_events AS e
+        ON o.provider = e.provider
+        AND o.symbol = e.symbol
+        AND o.pattern_name = e.pattern_name
+        AND o.detection_date = e.detection_date
+    GROUP BY
+        provider,
+        pattern_name,
+        pattern_category,
+        horizon_days,
+        htf_trend,
+        volume_profile_confluence,
+        retest_confirmed
+    """,
+    """
+    CREATE VIEW IF NOT EXISTS market.symbol_sentiment_summary AS
+    SELECT
+        symbol,
+        count() AS item_count,
+        round(avg(sentiment_score), 4) AS avg_sentiment_score,
+        multiIf(avg(sentiment_score) > 0.15, 'bullish', avg(sentiment_score) < -0.15, 'bearish', 'neutral')
+            AS sentiment_label,
+        anyLast(sentiment_reason) AS latest_reason,
+        max(coalesce(published_at, collected_at)) AS latest_at
+    FROM market.symbol_sentiment_items
+    GROUP BY symbol
     """,
 )
 

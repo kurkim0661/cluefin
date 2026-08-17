@@ -1,0 +1,348 @@
+<!doctype html>
+<html lang="ko">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Cluefin Signals</title>
+    <link rel="stylesheet" href="/static/app.css" />
+  </head>
+  <body>
+    <div class="app-shell">
+      <aside class="sidebar">
+        <div class="brand">
+          <span class="brand-mark"></span>
+          <div>
+            <strong>Cluefin</strong>
+            <span>Signals</span>
+          </div>
+        </div>
+        <nav class="nav" aria-label="Dashboard sections">
+          <button class="nav-item active" type="button" role="tab" aria-selected="true" aria-controls="overview-panel" data-tab="overview">Overview</button>
+          <button class="nav-item" type="button" role="tab" aria-selected="false" aria-controls="signals-panel" data-tab="signals">Signals</button>
+          <button class="nav-item" type="button" role="tab" aria-selected="false" aria-controls="patterns-panel" data-tab="patterns">Patterns</button>
+          <button class="nav-item" type="button" role="tab" aria-selected="false" aria-controls="universe-panel" data-tab="universe">Universe</button>
+          <button class="nav-item" type="button" role="tab" aria-selected="false" aria-controls="paper-panel" data-tab="paper">Paper</button>
+        </nav>
+        <div class="filters">
+          <label>
+            Pattern
+            <select id="pattern-filter">
+              <option value="">All</option>
+              <option value="double_bottom">Double Bottom</option>
+              <option value="inverse_head_and_shoulders">Inverse H&S</option>
+              <option value="ascending_triangle">Ascending Triangle</option>
+              <option value="descending_triangle">Descending Triangle</option>
+              <option value="symmetrical_triangle">Symmetrical Triangle</option>
+              <option value="high_tight_flag">High-Tight Flag</option>
+              <option value="rising_wedge">Rising Wedge</option>
+              <option value="falling_wedge">Falling Wedge</option>
+            </select>
+          </label>
+          <label>
+            Symbol
+            <input id="symbol-filter" type="search" placeholder="005930" />
+          </label>
+          <label class="toggle-row">
+            <input id="retest-filter" type="checkbox" />
+            Retest only
+          </label>
+        </div>
+      </aside>
+      <main class="workspace">
+        <header class="topbar">
+          <div>
+            <h1>Pattern Signal Dashboard</h1>
+            <p id="as-of">Loading ClickHouse snapshot</p>
+          </div>
+          <button id="refresh" class="primary-button" type="button">Refresh</button>
+        </header>
+
+        <div class="tab-panels">
+          <section id="overview-panel" class="tab-panel active" role="tabpanel" data-panel="overview">
+            <section class="metrics-grid" aria-label="Market summary">
+              <article class="metric">
+                <span>Universe</span>
+                <strong id="metric-symbols">0</strong>
+              </article>
+              <article class="metric">
+                <span>Pattern Events</span>
+                <strong id="metric-events">0</strong>
+              </article>
+              <article class="metric">
+                <span>Outcome Labels</span>
+                <strong id="metric-outcomes">0</strong>
+              </article>
+              <article class="metric">
+                <span>Active Signals</span>
+                <strong id="metric-signals">0</strong>
+              </article>
+            </section>
+            <section class="panel">
+              <div class="panel-header">
+                <div>
+                  <h2>Dashboard Snapshot</h2>
+                  <p>Latest ClickHouse load and signal coverage</p>
+                </div>
+              </div>
+              <div class="snapshot-list">
+                <div>
+                  <span>Top signal</span>
+                  <strong id="snapshot-top-signal">-</strong>
+                </div>
+                <div>
+                  <span>Best validated setup</span>
+                  <strong id="snapshot-best-pattern">-</strong>
+                </div>
+                <div>
+                  <span>Universe source</span>
+                  <strong id="snapshot-universe">-</strong>
+                </div>
+              </div>
+            </section>
+            <section class="panel chart-panel">
+              <div class="panel-header">
+                <div>
+                  <h2>Daily Candle Chart</h2>
+                  <p>OHLCV with VWAP, EMA, RSI, Volume Profile, and pattern overlays</p>
+                </div>
+                <div class="chart-controls">
+                  <select id="chart-symbol" aria-label="Chart symbol"></select>
+                  <select id="chart-window" aria-label="Chart range">
+                    <option value="60">60D</option>
+                    <option value="120" selected>120D</option>
+                    <option value="180">180D</option>
+                  </select>
+                  <label class="range-control y-range-control">
+                    <span>Y Range</span>
+                    <input
+                      id="chart-y-zoom"
+                      type="range"
+                      min="0.35"
+                      max="2.5"
+                      step="0.05"
+                      value="1"
+                      aria-describedby="chart-y-scale-value"
+                    />
+                    <output id="chart-y-scale-value" for="chart-y-zoom">100%</output>
+                  </label>
+                  <button id="chart-y-reset" class="ghost-button" type="button">Y Reset</button>
+                </div>
+              </div>
+              <div class="indicator-toggles" aria-label="Chart indicators">
+                <label><input type="checkbox" data-indicator="vwap" checked /> VWAP</label>
+                <label><input type="checkbox" data-indicator="ema_20" checked /> EMA20</label>
+                <label><input type="checkbox" data-indicator="ema_50" checked /> EMA50</label>
+                <label><input type="checkbox" data-indicator="ema_200" /> EMA200</label>
+                <label><input type="checkbox" data-indicator="volume" checked /> Volume</label>
+                <label><input type="checkbox" data-indicator="rsi" checked /> RSI</label>
+                <label><input type="checkbox" data-indicator="profile" checked /> Volume Profile</label>
+                <label><input type="checkbox" data-indicator="patterns" checked /> Patterns</label>
+              </div>
+              <div class="pattern-focus">
+                <div id="pattern-type-filters" class="pattern-type-filters" aria-label="Pattern type filters"></div>
+                <select id="pattern-event-select" aria-label="Pattern event"></select>
+              </div>
+              <div class="chart-wrap">
+                <canvas id="symbol-chart" width="1160" height="620" aria-label="Symbol candle chart"></canvas>
+              </div>
+              <div id="chart-legend" class="chart-legend"></div>
+              <div id="signal-evidence" class="signal-evidence"></div>
+            </section>
+          </section>
+
+          <section id="signals-panel" class="tab-panel" role="tabpanel" data-panel="signals" hidden>
+            <section class="panel signal-panel">
+              <div class="panel-header">
+                <div>
+                  <h2>Recent Signals</h2>
+                  <p>Sorted by confluence score</p>
+                </div>
+              </div>
+              <div class="table-wrap">
+                <table>
+                  <thead>
+                    <tr>
+                      <th>Symbol</th>
+                      <th>Name</th>
+                      <th>Pattern</th>
+                      <th>Date</th>
+                      <th>Score</th>
+                      <th>HTF</th>
+                      <th>POC</th>
+                      <th>Retest</th>
+                    </tr>
+                  </thead>
+                  <tbody id="signals-body"></tbody>
+                </table>
+              </div>
+            </section>
+          </section>
+
+          <section id="patterns-panel" class="tab-panel" role="tabpanel" data-panel="patterns" hidden>
+            <section class="panel">
+              <div class="panel-header">
+                <div>
+                  <h2>Validated Pattern Performance</h2>
+                  <p>Grouped by horizon and confluence factors</p>
+                </div>
+              </div>
+              <div class="table-wrap">
+                <table>
+                  <thead>
+                    <tr>
+                      <th>Pattern</th>
+                      <th>Horizon</th>
+                      <th>HTF</th>
+                      <th>Retest</th>
+                      <th>Samples</th>
+                      <th>Hit Rate</th>
+                      <th>Avg Return</th>
+                      <th>Score</th>
+                    </tr>
+                  </thead>
+                  <tbody id="performance-body"></tbody>
+                </table>
+              </div>
+            </section>
+          </section>
+
+          <section id="universe-panel" class="tab-panel" role="tabpanel" data-panel="universe" hidden>
+            <section class="panel">
+              <div class="panel-header">
+                <div>
+                  <h2>Universe</h2>
+                  <p>Current ranked symbol set loaded into ClickHouse</p>
+                </div>
+              </div>
+              <div class="table-wrap">
+                <table>
+                  <thead>
+                    <tr>
+                      <th>Rank</th>
+                      <th>Symbol</th>
+                      <th>Name</th>
+                      <th>Provider</th>
+                      <th>Universe</th>
+                      <th>Metric</th>
+                      <th>Value</th>
+                      <th>VWAP</th>
+                      <th>EMA20/50</th>
+                      <th>RSI</th>
+                      <th>RSI Div</th>
+                      <th>Sentiment</th>
+                      <th>Reason</th>
+                    </tr>
+                  </thead>
+                  <tbody id="universe-body"></tbody>
+                </table>
+              </div>
+            </section>
+          </section>
+
+          <section id="paper-panel" class="tab-panel" role="tabpanel" data-panel="paper" hidden>
+            <section class="panel">
+              <div class="panel-header">
+                <div>
+                  <h2>Paper Trading Lab</h2>
+                  <p>Accounts, signal strategies, and 1-year backtests</p>
+                </div>
+                <button id="paper-refresh" class="primary-button" type="button">Reload</button>
+              </div>
+              <div class="paper-grid">
+                <form id="paper-account-form" class="paper-form">
+                  <h3>Account</h3>
+                  <label>
+                    Name
+                    <input name="name" type="text" value="Pattern Lab" />
+                  </label>
+                  <label>
+                    Initial Cash
+                    <input name="initial_cash" type="number" min="0" step="100000" value="10000000" />
+                  </label>
+                  <button class="primary-button" type="submit">Create Account</button>
+                </form>
+                <form id="paper-strategy-form" class="paper-form">
+                  <h3>Strategy</h3>
+                  <label>
+                    Name
+                    <input name="name" type="text" value="Pattern + 3 Votes" />
+                  </label>
+                  <fieldset>
+                    <legend>Patterns</legend>
+                    <label><input name="pattern_names" type="checkbox" value="inverse_head_and_shoulders" checked /> Inverse H&S</label>
+                    <label><input name="pattern_names" type="checkbox" value="double_bottom" checked /> Double Bottom</label>
+                    <label><input name="pattern_names" type="checkbox" value="ascending_triangle" checked /> Ascending Triangle</label>
+                    <label><input name="pattern_names" type="checkbox" value="falling_wedge" checked /> Falling Wedge</label>
+                    <label><input name="pattern_names" type="checkbox" value="symmetrical_triangle" /> Symmetrical Triangle</label>
+                  </fieldset>
+                  <fieldset>
+                    <legend>Indicator Votes</legend>
+                    <label><input name="selected_indicators" type="checkbox" value="volume_profile" checked /> Volume Profile</label>
+                    <label><input name="selected_indicators" type="checkbox" value="vwap" checked /> VWAP</label>
+                    <label><input name="selected_indicators" type="checkbox" value="ema" checked /> EMA</label>
+                    <label><input name="selected_indicators" type="checkbox" value="rsi_divergence" /> RSI Divergence</label>
+                    <label><input name="selected_indicators" type="checkbox" value="volume" /> Volume Spike</label>
+                    <label><input name="selected_indicators" type="checkbox" value="htf_trend" /> HTF Trend</label>
+                  </fieldset>
+                  <div class="paper-form-row">
+                    <label>
+                      Min Votes
+                      <input name="min_indicator_agreement" type="number" min="0" max="6" step="1" value="3" />
+                    </label>
+                    <label>
+                      Min Score
+                      <input name="min_confluence" type="number" min="0" max="1" step="0.05" value="0.70" />
+                    </label>
+                  </div>
+                  <div class="paper-form-row">
+                    <label>
+                      Position %
+                      <input name="position_pct" type="number" min="0.01" max="1" step="0.01" value="0.20" />
+                    </label>
+                    <label>
+                      Hold Days
+                      <input name="hold_days" type="number" min="1" step="1" value="20" />
+                    </label>
+                  </div>
+                  <label class="toggle-row paper-toggle"><input name="require_retest" type="checkbox" /> Retest required</label>
+                  <button class="primary-button" type="submit">Create Strategy</button>
+                </form>
+                <form id="paper-backtest-form" class="paper-form">
+                  <h3>Backtest</h3>
+                  <label>
+                    Account
+                    <select name="account_id" id="paper-account-select"></select>
+                  </label>
+                  <label>
+                    Strategy
+                    <select name="strategy_id" id="paper-strategy-select"></select>
+                  </label>
+                  <label>
+                    Years
+                    <input name="years" type="number" min="1" max="5" step="1" value="1" />
+                  </label>
+                  <button class="primary-button" type="submit">Run Backtest</button>
+                </form>
+              </div>
+              <div class="paper-results">
+                <div>
+                  <h3>Accounts</h3>
+                  <div id="paper-accounts" class="paper-list"></div>
+                </div>
+                <div>
+                  <h3>Strategies</h3>
+                  <div id="paper-strategies" class="paper-list"></div>
+                </div>
+                <div>
+                  <h3>Recent Backtests</h3>
+                  <div id="paper-backtests" class="paper-list"></div>
+                </div>
+              </div>
+            </section>
+          </section>
+        </div>
+      </main>
+    </div>
+    <script src="/static/app.js"></script>
+  </body>
+</html>

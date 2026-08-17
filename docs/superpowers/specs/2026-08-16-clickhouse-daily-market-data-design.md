@@ -44,6 +44,7 @@ uv run cluefin-store ingest daily-universe --trade-date 20260816 --provider toss
 uv run cluefin-store ingest daily-universe-backfill --lookback-days 30 --provider toss --universe kr_trading_amount_top50
 uv run cluefin-store ingest daily-universe-backfill --from 20260716 --to 20260816 --provider toss --symbols 005930,000660
 uv run cluefin-store ingest dart-disclosures --from 20260801 --to 20260816
+uv run cluefin-store pattern-plan --start-date 2026-08-01 --end-date 2026-08-31 --symbol 005930
 uv run cluefin-store doctor
 ```
 
@@ -427,6 +428,13 @@ CREATE TABLE market.daily_pattern_events
     stop_price Nullable(Decimal(18, 4)),
     target_price Nullable(Decimal(18, 4)),
     confidence_score Float64,
+    htf_trend LowCardinality(String),
+    volume_profile_confluence UInt8,
+    retest_confirmed UInt8,
+    confluence_score Float64,
+    poc_price Nullable(Decimal(18, 4)),
+    value_area_low Nullable(Decimal(18, 4)),
+    value_area_high Nullable(Decimal(18, 4)),
     feature_json String,
     run_id UUID,
     collected_at DateTime64(3, 'Asia/Seoul')
@@ -468,13 +476,52 @@ Initial supported pattern candidates:
 - `ascending_triangle`
 - `high_tight_flag`
 
+The implemented scan path evaluates each symbol day by day over a rolling
+history window. Detection records contain only information available at the
+detection date plus explicit confluence fields. Outcome rows are written
+separately after enough future candles exist for each configured horizon.
+
 Initial confluence factors:
 
 - Higher-timeframe alignment from daily and weekly 50/200 moving averages.
 - Daily volume profile approximation: POC and value-area boundary proximity.
-- Retest confirmation after breakout, using reduced volume and support/resistance
-  flip checks.
-- Optional investor-flow confirmation from foreign and institutional net buying.
+- Retest confirmation after breakout by checking support/resistance flip near
+  the neckline or resistance level.
+- Optional investor-flow confirmation from foreign and institutional net buying
+  remains a future extension because the current provider protocol only requires
+  daily OHLCV.
+
+```sql
+CREATE VIEW market.pattern_performance_summary AS
+SELECT
+    o.provider,
+    o.pattern_name,
+    e.pattern_category,
+    o.horizon_days,
+    e.htf_trend,
+    e.volume_profile_confluence,
+    e.retest_confirmed,
+    count() AS sample_count,
+    avg(o.target_hit) AS target_hit_rate,
+    avg(o.stop_hit) AS stop_hit_rate,
+    avg(o.return_at_horizon) AS avg_return_at_horizon,
+    quantile(0.5)(o.return_at_horizon) AS median_return_at_horizon,
+    avg(e.confluence_score) AS avg_confluence_score
+FROM market.daily_pattern_outcomes AS o
+ANY LEFT JOIN market.daily_pattern_events AS e
+    ON o.provider = e.provider
+   AND o.symbol = e.symbol
+   AND o.pattern_name = e.pattern_name
+   AND o.detection_date = e.detection_date
+GROUP BY
+    o.provider,
+    o.pattern_name,
+    e.pattern_category,
+    o.horizon_days,
+    e.htf_trend,
+    e.volume_profile_confluence,
+    e.retest_confirmed;
+```
 
 ## DART Tables
 
@@ -609,6 +656,15 @@ GROUP BY e.pattern_name, o.horizon_days
 ORDER BY target_hit_rate DESC, detections DESC;
 ```
 
+Example: rank validated patterns by confluence group.
+
+```sql
+SELECT *
+FROM market.pattern_performance_summary
+WHERE sample_count >= 30
+ORDER BY target_hit_rate DESC, avg_return_at_horizon DESC;
+```
+
 ## Error Handling
 
 - Every ingestion creates an `ingest_runs` row.
@@ -628,8 +684,12 @@ Unit tests use mocked provider clients and no network:
 - Re-running the same trade date inserts rows with the same logical keys.
 - Pattern feature generation computes moving averages, volume ratios, and
   higher-timeframe trend labels from daily OHLCV.
+- Pattern-analysis dataset generation scans arbitrary symbols over rolling daily
+  windows and writes OHLCV, features, volume profiles, events, and outcomes.
 - Pattern outcome generation calculates target-hit, stop-hit, and horizon return
   labels from future daily candles without look-ahead in detection records.
+- Collection planning extends the user-requested target range with warmup days
+  and future outcome horizon days before calling the provider.
 - Optional endpoint failures do not fail core universe/OHLCV ingestion.
 - CLI parameter validation rejects invalid dates and unsupported providers.
 

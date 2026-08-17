@@ -63,12 +63,18 @@ class TechnicalFeature(InsertableRecord):
     symbol: str
     close: Decimal
     volume: int
+    vwap: Decimal | None
     ma_20: Decimal | None
     ma_50: Decimal | None
     ma_200: Decimal | None
+    ema_20: Decimal | None
+    ema_50: Decimal | None
+    ema_200: Decimal | None
     weekly_ma_50: Decimal | None
     weekly_ma_200: Decimal | None
     atr_14: Decimal | None
+    rsi_14: float | None
+    rsi_divergence: str
     return_1d: float | None
     return_5d: float | None
     return_20d: float | None
@@ -94,6 +100,89 @@ class VolumeProfileLevel(InsertableRecord):
 
 
 @dataclass(frozen=True, slots=True)
+class SymbolSentimentItem(InsertableRecord):
+    symbol: str
+    provider: str
+    query: str
+    title: str
+    source: str | None
+    url: str
+    published_at: datetime | None
+    summary: str
+    sentiment_label: str
+    sentiment_score: float
+    sentiment_reason: str
+    raw_json: str
+    run_id: UUID
+    collected_at: datetime
+
+
+@dataclass(frozen=True, slots=True)
+class PaperAccount(InsertableRecord):
+    account_id: str
+    name: str
+    base_currency: str
+    initial_cash: Decimal
+    is_active: int
+    created_at: datetime
+    updated_at: datetime
+
+
+@dataclass(frozen=True, slots=True)
+class PaperStrategy(InsertableRecord):
+    strategy_id: str
+    name: str
+    strategy_type: str
+    config_json: str
+    is_active: int
+    created_at: datetime
+    updated_at: datetime
+
+
+@dataclass(frozen=True, slots=True)
+class PaperBacktestRun(InsertableRecord):
+    run_id: UUID
+    account_id: str
+    strategy_id: str
+    start_date: date
+    end_date: date
+    initial_cash: Decimal
+    final_equity: Decimal
+    total_return: float
+    max_drawdown: float
+    trade_count: int
+    win_rate: float
+    params_json: str
+    created_at: datetime
+
+
+@dataclass(frozen=True, slots=True)
+class PaperBacktestDailyEquity(InsertableRecord):
+    run_id: UUID
+    trade_date: date
+    cash: Decimal
+    positions_value: Decimal
+    equity: Decimal
+    drawdown: float
+    created_at: datetime
+
+
+@dataclass(frozen=True, slots=True)
+class PaperBacktestTrade(InsertableRecord):
+    run_id: UUID
+    trade_date: date
+    symbol: str
+    side: str
+    quantity: int
+    price: Decimal
+    gross_amount: Decimal
+    fee: Decimal
+    realized_pnl: Decimal
+    reason: str
+    created_at: datetime
+
+
+@dataclass(frozen=True, slots=True)
 class PatternEvent(InsertableRecord):
     trade_date: date
     provider: str
@@ -113,6 +202,13 @@ class PatternEvent(InsertableRecord):
     feature_json: str
     run_id: UUID
     collected_at: datetime
+    htf_trend: str = "unknown"
+    volume_profile_confluence: int = 0
+    retest_confirmed: int = 0
+    confluence_score: float = 0.0
+    poc_price: Decimal | None = None
+    value_area_low: Decimal | None = None
+    value_area_high: Decimal | None = None
 
 
 @dataclass(frozen=True, slots=True)

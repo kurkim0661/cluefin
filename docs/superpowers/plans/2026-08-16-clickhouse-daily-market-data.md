@@ -259,7 +259,10 @@ Expected: PASS.
 **Files:**
 - Create: `packages/cluefin-store/src/cluefin_store/db.py`
 - Create: `packages/cluefin-store/src/cluefin_store/cli.py`
+- Create: `packages/cluefin-store/src/cluefin_store/analysis.py`
 - Create: `packages/cluefin-store/tests/test_cli.py`
+- Create: `packages/cluefin-store/tests/test_analysis.py`
+- Create: `packages/cluefin-store/tests/test_db.py`
 
 - [ ] **Step 1: Write failing CLI tests**
 
@@ -281,6 +284,36 @@ Expected: FAIL because CLI is missing.
 - [ ] **Step 4: Run test to verify it passes**
 
 Run: `uv run pytest packages/cluefin-store/tests/test_cli.py -v`
+
+Expected: PASS.
+
+### Task 5B: Rolling Pattern Analysis and Collection Plan
+
+**Files:**
+- Create/modify: `packages/cluefin-store/src/cluefin_store/analysis.py`
+- Modify: `packages/cluefin-store/src/cluefin_store/db.py`
+- Modify: `packages/cluefin-store/src/cluefin_store/cli.py`
+- Modify: `packages/cluefin-store/src/cluefin_store/schema.py`
+- Create/modify: `packages/cluefin-store/tests/test_analysis.py`
+- Create/modify: `packages/cluefin-store/tests/test_db.py`
+- Modify: `packages/cluefin-store/tests/test_schema.py`
+
+- [x] **Step 1: Write failing tests**
+
+Tests cover required collection-window expansion, rolling historical pattern
+scans, future outcome labeling, provider/store orchestration, ClickHouse record
+inserts, `pattern-plan` CLI output, and the pattern performance view.
+
+- [x] **Step 2: Implement minimal production code**
+
+Implemented `PatternAnalysisConfig`, `build_pattern_analysis_dataset`,
+`collect_and_store_pattern_analysis`, `pattern_collection_plan`,
+`ClickHouseStore.insert_records`, queryable confluence fields on
+`PatternEvent`, and `market.pattern_performance_summary`.
+
+- [x] **Step 3: Verify focused tests**
+
+Run: `uv run pytest packages/cluefin-store/tests/test_analysis.py packages/cluefin-store/tests/test_db.py packages/cluefin-store/tests/test_cli.py packages/cluefin-store/tests/test_schema.py -v`
 
 Expected: PASS.
 

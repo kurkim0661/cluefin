@@ -1,14 +1,19 @@
 from __future__ import annotations
 
 import os
+from collections.abc import Sequence
 from dataclasses import dataclass
-from typing import Protocol
+from typing import Any, Protocol
 
+from cluefin_store.models import InsertableRecord
 from cluefin_store.schema import SCHEMA_STATEMENTS
 
 
 class ClickHouseClientProtocol(Protocol):
     def command(self, sql: str):
+        pass
+
+    def insert(self, table: str, data: list[list[Any]], *, column_names: list[str]) -> None:
         pass
 
 
@@ -56,3 +61,13 @@ class ClickHouseStore:
         for statement in SCHEMA_STATEMENTS:
             client.command(statement)
         return len(SCHEMA_STATEMENTS)
+
+    def insert_records(self, table: str, records: Sequence[InsertableRecord | dict[str, Any]]) -> int:
+        if not records:
+            return 0
+
+        rows = [record.as_insert_row() if isinstance(record, InsertableRecord) else dict(record) for record in records]
+        column_names = list(rows[0].keys())
+        data = [[row[column] for column in column_names] for row in rows]
+        self.client().insert(table, data, column_names=column_names)
+        return len(rows)

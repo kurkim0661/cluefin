@@ -1,0 +1,23 @@
+[project]
+name = "cluefin-web"
+version = "0.1.0"
+description = "Browser dashboard for Cluefin market signals"
+requires-python = ">=3.10"
+dependencies = [
+    "cluefin-store",
+    "fastapi>=0.124.0",
+    "httpx2>=0.28.1",
+    "uvicorn>=0.38.0",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project.scripts]
+cluefin-web = "cluefin_web.app:main"
+
+[tool.ruff]
+extend = "../../pyproject.toml"
+include = ["src/**", "tests/**"]
+extend-exclude = ["src/cluefin_web/static/*", "src/cluefin_web/templates/*"]
