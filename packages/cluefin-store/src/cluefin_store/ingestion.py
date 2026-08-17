@@ -59,7 +59,9 @@ class TopBackfillConfig:
     def resolved_universe_name(self) -> str:
         if self.universe_name:
             return self.universe_name
-        return f"kr_{self.ranking_type.lower()}_top{self.count}_{self.ranking_duration}"
+        country = self.market_country.lower()
+        metric = self.ranking_type.lower()
+        return f"{country}_{metric}_top{self.count}_{self.ranking_duration}"
 
 
 def backfill_top_ranked(

@@ -59,9 +59,11 @@ class FakeProvider:
 class FakeStore:
     def __init__(self) -> None:
         self.inserts: dict[str, int] = {}
+        self.records: dict[str, list] = {}
 
     def insert_records(self, table: str, records: list) -> int:
         self.inserts[table] = len(records)
+        self.records[table] = list(records)
         return len(records)
 
 
@@ -90,3 +92,44 @@ def test_backfill_top_ranked_inserts_universe_and_analysis_rows() -> None:
     assert summary["market.daily_universe_members"] == 2
     assert summary["market.daily_ohlcv"] == 60
     assert "market.daily_technical_features" in summary
+
+
+def test_us_market_cap_config_uses_current_universe_name() -> None:
+    config = TopBackfillConfig(
+        end_date=date(2026, 8, 17),
+        years=1,
+        count=50,
+        ranking_type="MARKET_CAP",
+        ranking_duration="current",
+        market_country="US",
+    )
+
+    assert config.resolved_universe_name == "us_market_cap_top50_current"
+
+
+def test_universe_members_use_market_cap_selection_metric_for_us() -> None:
+    provider = FakeProvider()
+    store = FakeStore()
+    config = TopBackfillConfig(
+        end_date=date(2026, 8, 17),
+        years=1,
+        count=2,
+        ranking_type="MARKET_CAP",
+        ranking_duration="current",
+        market_country="US",
+        warmup_calendar_days=0,
+        outcome_horizons=(5,),
+    )
+
+    backfill_top_ranked(
+        provider=provider,
+        store=store,
+        config=config,
+        run_id=RUN_ID,
+        collected_at=COLLECTED_AT,
+    )
+
+    member_rows = store.records["market.daily_universe_members"]
+    assert member_rows[0].market_country == "US"
+    assert member_rows[0].universe_name == "us_market_cap_top2_current"
+    assert member_rows[0].selection_metric_name == "market_cap"
