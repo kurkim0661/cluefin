@@ -588,6 +588,7 @@ source = { editable = "packages/cluefin-store" }
 dependencies = [
     { name = "click" },
     { name = "clickhouse-connect" },
+    { name = "cluefin-openapi" },
     { name = "pydantic" },
     { name = "requests" },
 ]
@@ -596,6 +597,7 @@ dependencies = [
 requires-dist = [
     { name = "click", specifier = ">=8.1.7" },
     { name = "clickhouse-connect", specifier = ">=0.10.0" },
+    { name = "cluefin-openapi", editable = "packages/cluefin-openapi" },
     { name = "pydantic", specifier = ">=2.12.0,<3.0.0" },
     { name = "requests", specifier = ">=2.32.0" },
 ]

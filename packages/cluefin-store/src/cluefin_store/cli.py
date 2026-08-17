@@ -9,6 +9,7 @@ import click
 from cluefin_store.analysis import PatternAnalysisConfig, pattern_collection_plan
 from cluefin_store.db import ClickHouseSettings, ClickHouseStore
 from cluefin_store.ingestion import TopBackfillConfig, backfill_top_ranked
+from cluefin_store.kis_us import KisUsMarketDataProvider
 from cluefin_store.schema import SCHEMA_STATEMENTS
 from cluefin_store.sentiment import GoogleNewsRssSearchProvider, build_sentiment_items, sentiment_query
 from cluefin_store.toss import TossMarketDataProvider
@@ -61,16 +62,18 @@ def pattern_plan(start_date, end_date, symbol: tuple[str, ...], warmup_calendar_
 
 
 @cli.command(name="backfill-top")
-@click.option("--provider", type=click.Choice(["toss"]), default="toss", show_default=True)
+@click.option("--provider", type=click.Choice(["toss", "kis"]), default="toss", show_default=True)
+@click.option("--market-country", default="KR", show_default=True)
 @click.option("--end-date", type=click.DateTime(formats=["%Y-%m-%d"]), required=True)
 @click.option("--years", type=int, default=1, show_default=True)
 @click.option("--count", type=int, default=50, show_default=True)
 @click.option("--ranking-type", default="MARKET_TRADING_AMOUNT", show_default=True)
 @click.option("--ranking-duration", default="1y", show_default=True)
 @click.option("--warmup-calendar-days", type=int, default=420, show_default=True)
-@click.option("--dry-run", is_flag=True, help="Print the backfill plan without connecting to Toss or ClickHouse.")
+@click.option("--dry-run", is_flag=True, help="Print the backfill plan without connecting to providers or ClickHouse.")
 def backfill_top_command(
     provider: str,
+    market_country: str,
     end_date,
     years: int,
     count: int,
@@ -86,10 +89,12 @@ def backfill_top_command(
         count=count,
         ranking_type=ranking_type,
         ranking_duration=ranking_duration,
+        market_country=market_country.upper(),
         warmup_calendar_days=warmup_calendar_days,
     )
     plan = {
         "provider": provider,
+        "market_country": config.market_country,
         "ranking_type": config.ranking_type,
         "ranking_duration": config.ranking_duration,
         "count": config.count,
@@ -111,7 +116,12 @@ def backfill_top_command(
         click.echo(json.dumps(plan, ensure_ascii=False, indent=2, sort_keys=True))
         return
 
-    market_provider = TossMarketDataProvider.from_env()
+    if provider == "toss":
+        market_provider = TossMarketDataProvider.from_env()
+    elif provider == "kis":
+        market_provider = KisUsMarketDataProvider.from_env()
+    else:
+        raise click.ClickException(f"Unsupported provider: {provider}")
     store = ClickHouseStore()
     store.apply_schema()
     summary = backfill_top_ranked(

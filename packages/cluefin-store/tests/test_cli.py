@@ -63,6 +63,36 @@ def test_backfill_top_dry_run_prints_plan() -> None:
     assert '"universe_name": "kr_market_trading_amount_top50_1y"' in result.output
 
 
+def test_backfill_top_kis_us_dry_run_prints_plan_without_connecting() -> None:
+    result = CliRunner().invoke(
+        cli,
+        [
+            "backfill-top",
+            "--provider",
+            "kis",
+            "--market-country",
+            "US",
+            "--ranking-type",
+            "MARKET_CAP",
+            "--ranking-duration",
+            "current",
+            "--end-date",
+            "2026-08-17",
+            "--years",
+            "1",
+            "--count",
+            "50",
+            "--dry-run",
+        ],
+    )
+
+    assert result.exit_code == 0
+    assert '"provider": "kis"' in result.output
+    assert '"market_country": "US"' in result.output
+    assert '"ranking_type": "MARKET_CAP"' in result.output
+    assert '"universe_name": "us_market_cap_top50_current"' in result.output
+
+
 def test_update_sentiment_dry_run_prints_web_search_plan() -> None:
     result = CliRunner().invoke(
         cli,
