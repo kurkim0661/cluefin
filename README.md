@@ -1,5 +1,9 @@
 # Cluefin
 
+Market-wide macro, Korean equity, and crypto context can be collected into ClickHouse and read from the web dashboard. See [the market indicator pipeline](docs/market-indicators.md) for source coverage, commands, scheduling, and verification queries.
+
+The [daily research agent](docs/daily-research-agent.md) uses LangChain and LangGraph to combine those indicators with fundamentals, patterns, and signals through a PAT-authenticated model endpoint.
+
 [![Codacy Badge](https://app.codacy.com/project/badge/Grade/92b750be06a24d88869fbe83fb4f4cf4)](https://app.codacy.com/gh/kgcrom/cluefin/dashboard?utm_source=gh&utm_medium=referral&utm_content=&utm_campaign=Badge_grade)
 [![Codacy Badge](https://app.codacy.com/project/badge/Coverage/92b750be06a24d88869fbe83fb4f4cf4)](https://app.codacy.com/gh/kgcrom/cluefin/dashboard?utm_source=gh&utm_medium=referral&utm_content=&utm_campaign=Badge_coverage)
 [![CI Pipeline](https://github.com/kgcrom/cluefin/actions/workflows/ci.yml/badge.svg)](https://github.com/kgcrom/cluefin/actions/workflows/ci.yml)

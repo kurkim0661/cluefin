@@ -11,6 +11,7 @@ members = [
     "packages/cluefin-ta",
     "packages/cluefin-xbrl",
     "packages/cluefin-store",
+    "packages/cluefin-agent",
     "apps/cluefin-cli",
     "apps/cluefin-web",
     "apps/cluefin-openapi-cli",
@@ -33,6 +34,7 @@ cluefin-openapi = { workspace = true }
 cluefin-ta = { workspace = true }
 cluefin-xbrl = { workspace = true }
 cluefin-store = { workspace = true }
+cluefin-agent = { workspace = true }
 cluefin-cli = { workspace = true }
 cluefin-web = { workspace = true }
 cluefin-openapi-cli = { workspace = true }
