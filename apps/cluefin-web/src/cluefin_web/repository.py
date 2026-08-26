@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import json
+import math
 from dataclasses import asdict
 from datetime import date, datetime, timedelta
 from decimal import Decimal
+from threading import RLock
 from typing import Any
 from uuid import UUID, uuid4
 
@@ -23,6 +25,7 @@ from cluefin_store.patterns import detect_pattern_candidates
 class DashboardRepository:
     def __init__(self, client: Any) -> None:
         self.client = client
+        self._query_lock = RLock()
 
     @classmethod
     def from_env(cls) -> "DashboardRepository":
@@ -37,6 +40,85 @@ class DashboardRepository:
             "technicals": self.latest_technicals(),
             "sentiment": self.latest_sentiment(),
         }
+
+    def market_pulse(self) -> dict:
+        definitions = self._query_rows(
+            """
+            SELECT
+                indicator_id,
+                name_ko,
+                name_en,
+                domain,
+                category,
+                provider,
+                source_series,
+                unit,
+                frequency,
+                higher_is,
+                importance,
+                description_ko,
+                interpretation_ko,
+                source_url,
+                availability
+            FROM market.indicator_definitions FINAL
+            ORDER BY importance DESC, domain ASC, category ASC, indicator_id ASC
+            """,
+            fallback_columns=[
+                "indicator_id",
+                "name_ko",
+                "name_en",
+                "domain",
+                "category",
+                "provider",
+                "source_series",
+                "unit",
+                "frequency",
+                "higher_is",
+                "importance",
+                "description_ko",
+                "interpretation_ko",
+                "source_url",
+                "availability",
+            ],
+        )
+        observations = self._query_rows(
+            """
+            SELECT
+                indicator_id,
+                toString(period) AS observed_on,
+                value,
+                provider
+            FROM market.indicator_observations FINAL
+            WHERE period >= today() - 400
+            ORDER BY indicator_id ASC, period ASC
+            """,
+            fallback_columns=["indicator_id", "observed_on", "value", "provider"],
+        )
+        return _build_market_pulse(definitions, observations)
+
+    def latest_research_report(self) -> dict | None:
+        rows = self._query_rows(
+            """
+            SELECT toString(report_date) AS report_date, toString(report_id) AS report_id,
+                   model, status, title, markdown, summary_json, prompt_version,
+                   toString(generated_at) AS generated_at
+            FROM market.daily_research_reports FINAL
+            ORDER BY report_date DESC, generated_at DESC
+            LIMIT 1
+            """,
+            fallback_columns=[
+                "report_date",
+                "report_id",
+                "model",
+                "status",
+                "title",
+                "markdown",
+                "summary_json",
+                "prompt_version",
+                "generated_at",
+            ],
+        )
+        return rows[0] if rows else None
 
     def market_overview(self) -> dict:
         rows = self._query_rows(
@@ -136,9 +218,18 @@ class DashboardRepository:
                 m.name,
                 m.selection_metric_name,
                 m.selection_metric_value
-            FROM market.daily_universe_members AS m
-            WHERE m.trade_date = (SELECT max(trade_date) FROM market.daily_universe_members)
-            ORDER BY m.rank ASC, m.symbol ASC
+            FROM market.daily_universe_members AS m FINAL
+            INNER JOIN
+            (
+                SELECT provider, universe_name, max(trade_date) AS trade_date
+                FROM market.daily_universe_members
+                GROUP BY provider, universe_name
+            ) AS latest
+                ON m.provider = latest.provider
+                AND m.universe_name = latest.universe_name
+                AND m.trade_date = latest.trade_date
+            WHERE m.trade_date = latest.trade_date
+            ORDER BY m.market_country ASC, m.rank ASC, m.symbol ASC
             LIMIT {int(limit)}
             """,
             fallback_columns=[
@@ -167,7 +258,12 @@ class DashboardRepository:
                 t.rsi_14,
                 t.rsi_divergence
             FROM market.daily_technical_features AS t FINAL
-            WHERE t.trade_date = (SELECT max(trade_date) FROM market.daily_technical_features)
+            WHERE (t.provider, t.symbol, t.trade_date) IN
+            (
+                SELECT provider, symbol, max(trade_date)
+                FROM market.daily_technical_features
+                GROUP BY provider, symbol
+            )
             ORDER BY t.symbol ASC
             LIMIT {int(limit)}
             """,
@@ -717,11 +813,13 @@ class DashboardRepository:
         return signals
 
     def _insert_records(self, table: str, records: list[Any]) -> int:
-        return ClickHouseStore(client=self.client).insert_records(table, records)
+        with self._query_lock:
+            return ClickHouseStore(client=self.client).insert_records(table, records)
 
     def _query_rows(self, sql: str, *, fallback_columns: list[str]) -> list[dict]:
         try:
-            result = self.client.query(sql)
+            with self._query_lock:
+                result = self.client.query(sql)
         except Exception:
             return []
         columns = getattr(result, "column_names", None) or fallback_columns
@@ -740,6 +838,273 @@ def _parse_json_object(value: Any) -> dict:
     except json.JSONDecodeError:
         return {}
     return parsed if isinstance(parsed, dict) else {}
+
+
+def _build_market_pulse(definitions: list[dict], observations: list[dict]) -> dict:
+    series_by_id: dict[str, list[dict]] = {}
+    for row in observations:
+        indicator_id = str(row.get("indicator_id") or "")
+        period = _parse_date(row.get("observed_on") or row.get("period"))
+        if not indicator_id or period is None or row.get("value") is None:
+            continue
+        series_by_id.setdefault(indicator_id, []).append(
+            {"period": period, "value": float(row["value"]), "provider": row.get("provider")}
+        )
+
+    indicators: list[dict] = []
+    for definition in definitions:
+        indicator_id = str(definition.get("indicator_id") or "")
+        series = sorted(series_by_id.get(indicator_id, []), key=lambda item: item["period"])
+        latest = series[-1] if series else None
+        previous = series[-2] if len(series) > 1 else None
+        change = latest["value"] - previous["value"] if latest and previous else None
+        change_pct = change / abs(previous["value"]) if change is not None and previous["value"] else None
+        latest_period = latest["period"] if latest else None
+        freshness = _freshness(latest_period, str(definition.get("frequency") or "daily"))
+        impact = _impact_assessment(definition, series, freshness)
+        level = _level_assessment(str(definition.get("higher_is") or "context"), impact["percentile"])
+        indicators.append(
+            {
+                **definition,
+                "importance": int(definition.get("importance") or 0),
+                "value": latest["value"] if latest else None,
+                "previous_value": previous["value"] if previous else None,
+                "change": change,
+                "change_pct": change_pct,
+                "tone": impact["tone"],
+                "impact_score": impact["score"],
+                "impact_label": impact["label"],
+                "impact_strength": impact["strength"],
+                "impact_explanation": impact["explanation"],
+                "impact_confidence": impact["confidence"],
+                "comparison_label": impact["comparison_label"],
+                "comparison_change": impact["comparison_change"],
+                "percentile": impact["percentile"],
+                "level_label": level["label"],
+                "level_tone": level["tone"],
+                "period": latest_period.isoformat() if latest_period else None,
+                "freshness": freshness,
+                "series": [{"period": item["period"].isoformat(), "value": item["value"]} for item in series[-180:]],
+            }
+        )
+
+    observed = [item for item in indicators if item["value"] is not None]
+    scored = [item for item in observed if item["tone"] != "neutral" and item["importance"] >= 2]
+    positive = sum(item["importance"] for item in scored if item["tone"] == "positive")
+    negative = sum(item["importance"] for item in scored if item["tone"] == "negative")
+    regime = _market_regime(positive, negative)
+    sections = {
+        "rates_liquidity": _section_summary(
+            indicators, lambda item: item["category"] in {"rates", "liquidity", "credit", "fx"}
+        ),
+        "growth_prices": _section_summary(
+            indicators, lambda item: item["category"] in {"growth", "inflation", "labor", "commodities"}
+        ),
+        "korea": _section_summary(indicators, lambda item: item["domain"] == "korea"),
+        "equity": _section_summary(indicators, lambda item: item["domain"] == "equity"),
+        "crypto": _section_summary(indicators, lambda item: item["domain"] == "crypto"),
+    }
+    drivers = sorted(
+        observed,
+        key=lambda item: (
+            item["importance"],
+            item["freshness"] == "fresh",
+            abs(item["impact_score"] or 0),
+        ),
+        reverse=True,
+    )[:16]
+    unavailable = [item for item in indicators if item["value"] is None]
+    return {
+        "regime": regime,
+        "coverage": {
+            "observed": len(observed),
+            "total": len(indicators),
+            "fresh": sum(item["freshness"] == "fresh" for item in observed),
+            "public_missing": sum(
+                item["value"] is None and item.get("availability") in {"public", "derived"} for item in indicators
+            ),
+            "connection_required": sum(
+                item["value"] is None and item.get("availability") in {"api_key", "licensed"} for item in indicators
+            ),
+        },
+        "sections": sections,
+        "drivers": drivers,
+        "indicators": indicators,
+        "unavailable": unavailable,
+        "as_of": max((item["period"] for item in observed if item["period"]), default=None),
+    }
+
+
+def _impact_assessment(definition: dict, series: list[dict], freshness: str) -> dict:
+    higher_is = str(definition.get("higher_is") or "context")
+    frequency = str(definition.get("frequency") or "daily")
+    lag, comparison_label = _impact_lag(frequency)
+    percentile = _series_percentile(series)
+    if not series:
+        return {
+            "score": None,
+            "tone": "neutral",
+            "label": "데이터 없음",
+            "strength": "none",
+            "explanation": "관측값이 없어 시장 영향을 계산하지 못했습니다.",
+            "confidence": "none",
+            "comparison_label": comparison_label,
+            "comparison_change": None,
+            "percentile": percentile,
+        }
+    if higher_is == "context":
+        return {
+            "score": None,
+            "tone": "neutral",
+            "label": "판단 보조",
+            "strength": "context",
+            "explanation": "방향만으로 호재·악재를 정할 수 없어 다른 지표와 함께 해석해야 합니다.",
+            "confidence": _impact_confidence(len(series), freshness),
+            "comparison_label": comparison_label,
+            "comparison_change": None,
+            "percentile": percentile,
+        }
+
+    effective_lag = min(lag, len(series) - 1)
+    if effective_lag <= 0:
+        return {
+            "score": 0,
+            "tone": "neutral",
+            "label": "변화 확인 전",
+            "strength": "weak",
+            "explanation": "비교할 이전 관측값이 더 필요합니다.",
+            "confidence": "low",
+            "comparison_label": comparison_label,
+            "comparison_change": None,
+            "percentile": percentile,
+        }
+
+    change = series[-1]["value"] - series[-1 - effective_lag]["value"]
+    historical_changes = [
+        series[index]["value"] - series[index - effective_lag]["value"] for index in range(effective_lag, len(series))
+    ]
+    scale = math.sqrt(sum(value * value for value in historical_changes) / len(historical_changes))
+    direction = 1 if higher_is == "risk_on" else -1
+    normalized = direction * change / scale if scale else 0.0
+    score = round(100 * math.tanh(normalized / 1.6))
+    tone = "positive" if score >= 25 else "negative" if score <= -25 else "neutral"
+    label = "우호적" if tone == "positive" else "부담" if tone == "negative" else "중립"
+    strength = "strong" if abs(score) >= 65 else "moderate" if abs(score) >= 25 else "weak"
+    moved = "상승" if change > 0 else "하락" if change < 0 else "보합"
+    if tone == "positive":
+        effect = "위험자산에 우호적인 방향입니다"
+    elif tone == "negative":
+        effect = "위험자산에 부담이 되는 방향입니다"
+    else:
+        effect = "평소 변동 범위라 방향 신호가 약합니다"
+    return {
+        "score": score,
+        "tone": tone,
+        "label": label,
+        "strength": strength,
+        "explanation": f"{comparison_label} 기준 {moved}했고, {effect}.",
+        "confidence": _impact_confidence(len(series), freshness),
+        "comparison_label": comparison_label,
+        "comparison_change": change,
+        "percentile": percentile,
+    }
+
+
+def _impact_lag(frequency: str) -> tuple[int, str]:
+    return {
+        "hourly": (24, "24시간"),
+        "daily": (5, "최근 5거래일"),
+        "weekly": (4, "최근 4주"),
+        "monthly": (3, "최근 3개월"),
+        "quarterly": (1, "직전 분기"),
+        "annual": (1, "직전 연도"),
+        "event": (1, "직전 발표"),
+    }.get(frequency, (1, "직전 관측"))
+
+
+def _series_percentile(series: list[dict]) -> int | None:
+    if not series:
+        return None
+    latest = series[-1]["value"]
+    below_or_equal = sum(item["value"] <= latest for item in series)
+    return round(below_or_equal / len(series) * 100)
+
+
+def _impact_confidence(point_count: int, freshness: str) -> str:
+    if freshness == "stale" or point_count < 3:
+        return "low"
+    if freshness == "fresh" and point_count >= 20:
+        return "high"
+    return "medium"
+
+
+def _level_assessment(higher_is: str, percentile: int | None) -> dict[str, str]:
+    if percentile is None:
+        return {"label": "수준 계산 전", "tone": "neutral"}
+    if 30 < percentile < 70:
+        return {"label": f"현재 수준 중간권 · {percentile}백분위", "tone": "neutral"}
+    zone = "높은" if percentile >= 70 else "낮은"
+    if higher_is == "context":
+        return {"label": f"현재 {zone} 구간 · {percentile}백분위", "tone": "neutral"}
+    supportive = (higher_is == "risk_on" and percentile >= 70) or (higher_is == "risk_off" and percentile <= 30)
+    return {
+        "label": f"현재 수준 {'우호' if supportive else '부담'} · {percentile}백분위",
+        "tone": "positive" if supportive else "negative",
+    }
+
+
+def _freshness(period: date | None, frequency: str) -> str:
+    if period is None:
+        return "missing"
+    limits = {"hourly": 2, "daily": 5, "weekly": 14, "monthly": 50, "quarterly": 130, "annual": 450, "event": 100}
+    age = (date.today() - period).days
+    if age <= limits.get(frequency, 14):
+        return "fresh"
+    if age <= limits.get(frequency, 14) * 2:
+        return "aging"
+    return "stale"
+
+
+def _market_regime(positive: int, negative: int) -> dict:
+    total = positive + negative
+    score = (positive - negative) / total if total else 0.0
+    if score >= 0.2:
+        return {
+            "key": "supportive",
+            "label": "우호적",
+            "headline": "위험자산에 우호적인 신호가 조금 더 많습니다",
+            "summary": "방향이 같은 지표가 이어지는지 확인하면서 과도한 낙관은 경계하세요.",
+            "score": round(score, 3),
+        }
+    if score <= -0.2:
+        return {
+            "key": "defensive",
+            "label": "방어적",
+            "headline": "금융여건과 경기 신호가 위험자산에 부담을 줍니다",
+            "summary": "현금흐름과 재무건전성이 약한 자산의 변동성 확대에 유의하세요.",
+            "score": round(score, 3),
+        }
+    return {
+        "key": "mixed",
+        "label": "혼조",
+        "headline": "지표들이 한 방향으로 모이지 않고 있습니다",
+        "summary": "단일 숫자보다 발표 서프라이즈와 3개월 추세를 우선해 읽으세요.",
+        "score": round(score, 3),
+    }
+
+
+def _section_summary(indicators: list[dict], predicate) -> dict:
+    items = [item for item in indicators if predicate(item)]
+    observed = [item for item in items if item["value"] is not None]
+    positive = sum(item["tone"] == "positive" for item in observed)
+    negative = sum(item["tone"] == "negative" for item in observed)
+    if positive > negative:
+        tone, label = "positive", "우호"
+    elif negative > positive:
+        tone, label = "negative", "부담"
+    else:
+        tone, label = "neutral", "중립"
+    return {"tone": tone, "label": label, "observed": len(observed), "total": len(items)}
 
 
 def _parse_json_list(value: Any) -> list:

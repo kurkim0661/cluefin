@@ -3,7 +3,8 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>Cluefin Signals</title>
+    <title>Cluefin Market Intelligence</title>
+    <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='18' fill='%23102925'/%3E%3Cpath d='M17 43V22h8v13h22v8z' fill='%2374c5a9'/%3E%3Ccircle cx='43' cy='22' r='8' fill='%23d7a84f'/%3E%3C/svg%3E" />
     <link rel="stylesheet" href="/static/app.css" />
   </head>
   <body>
@@ -13,19 +14,21 @@
           <span class="brand-mark"></span>
           <div>
             <strong>Cluefin</strong>
-            <span>Signals</span>
+            <span>Market intelligence</span>
           </div>
         </div>
         <nav class="nav" aria-label="Dashboard sections">
-          <button class="nav-item active" type="button" role="tab" aria-selected="true" aria-controls="overview-panel" data-tab="overview">Overview</button>
-          <button class="nav-item" type="button" role="tab" aria-selected="false" aria-controls="signals-panel" data-tab="signals">Signals</button>
-          <button class="nav-item" type="button" role="tab" aria-selected="false" aria-controls="patterns-panel" data-tab="patterns">Patterns</button>
-          <button class="nav-item" type="button" role="tab" aria-selected="false" aria-controls="universe-panel" data-tab="universe">Universe</button>
-          <button class="nav-item" type="button" role="tab" aria-selected="false" aria-controls="paper-panel" data-tab="paper">Paper</button>
+          <button class="nav-item active" type="button" role="tab" aria-selected="true" aria-controls="pulse-panel" data-tab="pulse"><span>01</span> 시장 맥락</button>
+          <button class="nav-item" type="button" role="tab" aria-selected="false" aria-controls="overview-panel" data-tab="overview"><span>02</span> 종목 차트</button>
+          <button class="nav-item" type="button" role="tab" aria-selected="false" aria-controls="signals-panel" data-tab="signals"><span>03</span> 시그널</button>
+          <button class="nav-item" type="button" role="tab" aria-selected="false" aria-controls="patterns-panel" data-tab="patterns"><span>04</span> 패턴 검증</button>
+          <button class="nav-item" type="button" role="tab" aria-selected="false" aria-controls="universe-panel" data-tab="universe"><span>05</span> 종목 탐색</button>
+          <button class="nav-item" type="button" role="tab" aria-selected="false" aria-controls="paper-panel" data-tab="paper"><span>06</span> 전략 실험</button>
         </nav>
         <div class="filters">
+          <p class="filter-title">시그널 빠른 필터</p>
           <label>
-            Pattern
+            패턴
             <select id="pattern-filter">
               <option value="">All</option>
               <option value="double_bottom">Double Bottom</option>
@@ -39,26 +42,115 @@
             </select>
           </label>
           <label>
-            Symbol
+            종목코드
             <input id="symbol-filter" type="search" placeholder="005930" />
           </label>
           <label class="toggle-row">
             <input id="retest-filter" type="checkbox" />
-            Retest only
+            리테스트만 보기
           </label>
         </div>
       </aside>
       <main class="workspace">
         <header class="topbar">
           <div>
-            <h1>Pattern Signal Dashboard</h1>
-            <p id="as-of">Loading ClickHouse snapshot</p>
+            <span class="topbar-kicker">CLUEFIN / RESEARCH DESK</span>
+            <h1>Market Intelligence</h1>
+            <p id="as-of">시장 데이터를 불러오는 중입니다</p>
           </div>
           <button id="refresh" class="primary-button" type="button">Refresh</button>
         </header>
 
         <div class="tab-panels">
-          <section id="overview-panel" class="tab-panel active" role="tabpanel" data-panel="overview">
+          <section id="pulse-panel" class="tab-panel active" role="tabpanel" data-panel="pulse">
+            <section class="pulse-hero">
+              <div class="pulse-hero-copy">
+                <div class="eyebrow-row">
+                  <span class="eyebrow">오늘의 시장 환경</span>
+                  <span id="pulse-regime" class="regime-badge neutral">분석 중</span>
+                </div>
+                <h2 id="pulse-headline">지표들을 한 문장으로 정리하고 있습니다</h2>
+                <p id="pulse-summary">금리, 유동성, 경기, 한국시장과 코인 온체인을 같은 시점에서 비교합니다.</p>
+              </div>
+              <div class="pulse-score" aria-label="Market regime score">
+                <span>시장 온도</span>
+                <strong id="pulse-score">0</strong>
+                <small>-100 방어적 · +100 우호적</small>
+              </div>
+            </section>
+
+            <section class="context-grid" aria-label="시장 영역 요약">
+              <article class="context-card" data-context="rates_liquidity">
+                <span class="context-index">01</span>
+                <div><p>금리와 유동성</p><strong>집계 중</strong><small>실질금리 · 달러 · 신용</small></div>
+              </article>
+              <article class="context-card" data-context="growth_prices">
+                <span class="context-index">02</span>
+                <div><p>경기와 물가</p><strong>집계 중</strong><small>물가 · 고용 · 생산</small></div>
+              </article>
+              <article class="context-card" data-context="korea">
+                <span class="context-index">03</span>
+                <div><p>한국 시장</p><strong>집계 중</strong><small>원화 · 수출 · 반도체</small></div>
+              </article>
+              <article class="context-card" data-context="equity">
+                <span class="context-index">04</span>
+                <div><p>기업 실적</p><strong>집계 중</strong><small>성장 폭 · ROE · 부채</small></div>
+              </article>
+              <article class="context-card" data-context="crypto">
+                <span class="context-index">05</span>
+                <div><p>디지털 자산</p><strong>집계 중</strong><small>유동성 · 온체인 · 공급</small></div>
+              </article>
+            </section>
+
+            <section class="ai-brief-panel">
+              <div class="ai-brief-heading"><div><span class="section-kicker">LANGGRAPH DAILY BRIEF</span><h2>AI 일일 분석 리포트</h2><p>거시·한국/미국 주식·코인·패턴·시그널을 같은 스냅샷으로 종합합니다.</p></div><span id="ai-report-status" class="freshness missing">리포트 대기</span></div>
+              <div id="ai-report-content" class="ai-report-content empty"><strong>아직 생성된 리포트가 없습니다</strong><p>PAT 환경을 연결한 뒤 <code>uv run cluefin-agent daily-report</code>를 실행하면 이곳에 최신 리포트가 표시됩니다.</p></div>
+            </section>
+
+            <section class="pulse-toolbar">
+              <div>
+                <span class="section-kicker">MARKET DRIVERS</span>
+                <h2>지금 확인할 숫자</h2>
+              </div>
+              <div class="pulse-filters" aria-label="지표 영역 필터">
+                <button class="active" type="button" data-pulse-filter="all">전체</button>
+                <button type="button" data-pulse-filter="global">글로벌</button>
+                <button type="button" data-pulse-filter="korea">한국</button>
+                <button type="button" data-pulse-filter="equity">주식</button>
+                <button type="button" data-pulse-filter="crypto">코인</button>
+              </div>
+            </section>
+            <div class="impact-reading-key" aria-label="시장 영향도 읽는 법">
+              <span class="positive"><i></i><strong>우호적</strong> 위험자산에 도움이 되는 변화</span>
+              <span class="neutral"><i></i><strong>중립</strong> 평소 변동 범위 또는 방향 불명확</span>
+              <span class="negative"><i></i><strong>부담</strong> 할인율·경기·수급에 불리한 변화</span>
+              <small>점수는 지표 주기에 맞춘 변화가 최근 변동성보다 얼마나 큰지 나타냅니다.</small>
+            </div>
+            <section id="driver-grid" class="driver-grid" aria-live="polite"></section>
+
+            <section class="pulse-bottom-grid">
+              <article class="panel reading-guide">
+                <span class="section-kicker">READING GUIDE</span>
+                <h2>숫자를 읽는 순서</h2>
+                <ol>
+                  <li><span>01</span><div><strong>예상과 얼마나 달랐는가</strong><p>절대값보다 시장 컨센서스 대비 서프라이즈를 먼저 봅니다.</p></div></li>
+                  <li><span>02</span><div><strong>추세가 이어지는가</strong><p>하루 변화보다 최근 3개월 방향과 전월 수정치를 확인합니다.</p></div></li>
+                  <li><span>03</span><div><strong>서로 확인해 주는가</strong><p>금리·달러·신용·실적이 같은 방향일 때 신뢰도가 높아집니다.</p></div></li>
+                </ol>
+              </article>
+              <article class="panel data-coverage">
+                <div class="coverage-heading">
+                  <div><span class="section-kicker">DATA COVERAGE</span><h2>수집 상태</h2></div>
+                  <strong id="coverage-ratio">0 / 0</strong>
+                </div>
+                <div class="coverage-track"><span id="coverage-bar"></span></div>
+                <p id="coverage-copy">카탈로그와 공급자 연결 상태를 확인하고 있습니다.</p>
+                <div id="connection-list" class="connection-list"></div>
+              </article>
+            </section>
+          </section>
+
+          <section id="overview-panel" class="tab-panel" role="tabpanel" data-panel="overview" hidden>
             <section class="metrics-grid" aria-label="Market summary">
               <article class="metric">
                 <span>Universe</span>
@@ -102,8 +194,8 @@
             <section class="panel chart-panel">
               <div class="panel-header">
                 <div>
-                  <h2>Daily Candle Chart</h2>
-                  <p>OHLCV with VWAP, EMA, RSI, Volume Profile, and pattern overlays</p>
+                  <h2>종목 차트</h2>
+                  <p>가격부터 보고, 필요한 보조지표만 하나씩 켜서 가설을 확인하세요.</p>
                 </div>
                 <div class="chart-controls">
                   <select id="chart-symbol" aria-label="Chart symbol"></select>
@@ -129,14 +221,15 @@
                 </div>
               </div>
               <div class="indicator-toggles" aria-label="Chart indicators">
-                <label><input type="checkbox" data-indicator="vwap" checked /> VWAP</label>
-                <label><input type="checkbox" data-indicator="ema_20" checked /> EMA20</label>
-                <label><input type="checkbox" data-indicator="ema_50" checked /> EMA50</label>
+                <span class="indicator-hint">보조지표 기본 OFF</span>
+                <label><input type="checkbox" data-indicator="vwap" /> VWAP</label>
+                <label><input type="checkbox" data-indicator="ema_20" /> EMA20</label>
+                <label><input type="checkbox" data-indicator="ema_50" /> EMA50</label>
                 <label><input type="checkbox" data-indicator="ema_200" /> EMA200</label>
-                <label><input type="checkbox" data-indicator="volume" checked /> Volume</label>
-                <label><input type="checkbox" data-indicator="rsi" checked /> RSI</label>
-                <label><input type="checkbox" data-indicator="profile" checked /> Volume Profile</label>
-                <label><input type="checkbox" data-indicator="patterns" checked /> Patterns</label>
+                <label><input type="checkbox" data-indicator="volume" /> Volume</label>
+                <label><input type="checkbox" data-indicator="rsi" /> RSI</label>
+                <label><input type="checkbox" data-indicator="profile" /> Volume Profile</label>
+                <label><input type="checkbox" data-indicator="patterns" /> Patterns</label>
               </div>
               <div class="pattern-focus">
                 <div id="pattern-type-filters" class="pattern-type-filters" aria-label="Pattern type filters"></div>
@@ -179,17 +272,36 @@
           </section>
 
           <section id="patterns-panel" class="tab-panel" role="tabpanel" data-panel="patterns" hidden>
-            <section class="panel">
-              <div class="panel-header">
-                <div>
-                  <h2>Validated Pattern Performance</h2>
-                  <p>Grouped by horizon and confluence factors</p>
-                </div>
+            <section class="analysis-intro pattern-intro">
+              <div>
+                <span class="section-kicker">EVIDENCE, NOT A SIGNAL</span>
+                <h2>패턴 검증실</h2>
+                <p>패턴 이름보다 표본 수, 적중률, 평균수익이 함께 좋은지를 확인하세요. 이 화면은 매수 목록이 아니라 전략에 넣을 근거를 고르는 곳입니다.</p>
               </div>
+              <div class="analysis-principle"><strong>기본 검증선</strong><span>표본 30건 이상</span><span>평균수익 양수</span><span>적중률 55% 이상</span></div>
+            </section>
+            <section class="pattern-summary-grid" aria-label="패턴 검증 요약">
+              <article><span>검증 통과 조합</span><strong id="pattern-qualified-count">0</strong><small>기본 검증선 충족</small></article>
+              <article><span>가장 신뢰할 패턴</span><strong id="pattern-best-name">-</strong><small id="pattern-best-detail">표본 확인 중</small></article>
+              <article><span>전체 표본</span><strong id="pattern-total-samples">0</strong><small>조건별 누적 관측</small></article>
+              <article><span>주의할 조합</span><strong id="pattern-risk-count">0</strong><small>평균수익 0% 이하</small></article>
+            </section>
+            <section class="analysis-toolbar pattern-toolbar">
+              <div><span class="section-kicker">COMPARE SETUPS</span><h2>조건별 근거 비교</h2></div>
+              <div class="analysis-filters">
+                <label>기간<select id="pattern-horizon-filter"><option value="all">전체</option><option value="5">5일</option><option value="10">10일</option><option value="20">20일</option></select></label>
+                <label>최소 표본<select id="pattern-sample-filter"><option value="0">제한 없음</option><option value="20">20건</option><option value="30" selected>30건</option><option value="50">50건</option></select></label>
+                <label>판정<select id="pattern-verdict-filter"><option value="all">전체</option><option value="qualified">검증 통과</option><option value="watch">관찰 가치</option><option value="weak">근거 약함</option></select></label>
+              </div>
+            </section>
+            <section id="pattern-card-grid" class="pattern-card-grid" aria-live="polite"></section>
+            <section class="panel evidence-detail-panel">
+              <div class="panel-header"><div><h2>근거 상세</h2><p>같은 패턴도 보유기간·상위 추세·리테스트 조건에 따라 결과가 달라집니다.</p></div></div>
               <div class="table-wrap">
                 <table>
                   <thead>
                     <tr>
+                      <th>판정</th>
                       <th>Pattern</th>
                       <th>Horizon</th>
                       <th>HTF</th>
@@ -204,33 +316,47 @@
                 </table>
               </div>
             </section>
+            <section class="decision-guide">
+              <article><span>01</span><div><strong>표본부터 거르기</strong><p>30건 미만은 높은 적중률이어도 우연일 가능성이 큽니다.</p></div></article>
+              <article><span>02</span><div><strong>수익과 적중률 같이 보기</strong><p>적중률만 높고 평균수익이 음수라면 손실 한 번이 큰 전략일 수 있습니다.</p></div></article>
+              <article><span>03</span><div><strong>조건을 전략으로 옮기기</strong><p>검증된 보유기간과 리테스트 조건을 전략 실험실에서 그대로 재검증하세요.</p></div></article>
+            </section>
           </section>
 
           <section id="universe-panel" class="tab-panel" role="tabpanel" data-panel="universe" hidden>
-            <section class="panel">
-              <div class="panel-header">
-                <div>
-                  <h2>Universe</h2>
-                  <p>Current ranked symbol set loaded into ClickHouse</p>
-                </div>
+            <section class="analysis-intro explorer-intro">
+              <div><span class="section-kicker">FROM UNIVERSE TO WATCHLIST</span><h2>오늘 볼 종목</h2><p>유니버스는 매수 추천이 아니라 분석 대상을 줄이는 출발점입니다. 기술·감성·패턴이 겹치는 종목부터 차트에서 확인하세요.</p></div>
+              <div class="analysis-principle"><strong>선정 순서</strong><span>시그널 확인</span><span>추세 확인</span><span>과열·위험 제외</span></div>
+            </section>
+            <section class="explorer-summary-grid" aria-label="종목 탐색 요약">
+              <article><span>패턴 시그널</span><strong id="explorer-signal-count">0</strong><small>최근 30일</small></article>
+              <article><span>상승 추세</span><strong id="explorer-trend-count">0</strong><small>EMA20 &gt; EMA50</small></article>
+              <article><span>과매도 후보</span><strong id="explorer-oversold-count">0</strong><small>RSI 35 이하</small></article>
+              <article><span>주의 필요</span><strong id="explorer-risk-count">0</strong><small>하락 추세·부정 감성</small></article>
+            </section>
+            <section class="analysis-toolbar explorer-toolbar">
+              <div><span class="section-kicker">PRIORITIZED WATCHLIST</span><h2>분석 우선순위</h2></div>
+              <div class="analysis-filters">
+                <label>검색<input id="universe-search" type="search" placeholder="종목명 또는 코드" /></label>
+                <label>관찰 목적<select id="universe-filter"><option value="all">전체</option><option value="signal">시그널 있음</option><option value="momentum">상승 추세</option><option value="oversold">과매도 후보</option><option value="risk">주의 필요</option></select></label>
+                <label>정렬<select id="universe-sort"><option value="priority">분석 우선순위</option><option value="rank">유니버스 순위</option><option value="rsi_low">RSI 낮은 순</option><option value="rsi_high">RSI 높은 순</option></select></label>
               </div>
+            </section>
+            <section id="universe-watchlist" class="watchlist-grid" aria-live="polite"></section>
+            <section class="panel explorer-table-panel">
+              <div class="panel-header"><div><h2>전체 후보</h2><p>행을 누르면 해당 종목의 깨끗한 가격 차트로 이동합니다.</p></div></div>
               <div class="table-wrap">
                 <table>
                   <thead>
                     <tr>
                       <th>Rank</th>
-                      <th>Symbol</th>
-                      <th>Name</th>
-                      <th>Provider</th>
-                      <th>Universe</th>
-                      <th>Metric</th>
-                      <th>Value</th>
-                      <th>VWAP</th>
-                      <th>EMA20/50</th>
+                      <th>종목</th>
+                      <th>우선순위</th>
+                      <th>관찰 이유</th>
+                      <th>추세</th>
                       <th>RSI</th>
-                      <th>RSI Div</th>
-                      <th>Sentiment</th>
-                      <th>Reason</th>
+                      <th>감성</th>
+                      <th>최근 패턴</th>
                     </tr>
                   </thead>
                   <tbody id="universe-body"></tbody>
@@ -240,101 +366,106 @@
           </section>
 
           <section id="paper-panel" class="tab-panel" role="tabpanel" data-panel="paper" hidden>
-            <section class="panel">
-              <div class="panel-header">
-                <div>
-                  <h2>Paper Trading Lab</h2>
-                  <p>Accounts, signal strategies, and 1-year backtests</p>
+            <section class="analysis-intro experiment-intro">
+              <div><span class="section-kicker">TEST BEFORE YOU TRUST</span><h2>전략 실험실</h2><p>계좌 → 규칙 → 백테스트 순서로 한 단계씩 진행하세요. 결과는 수익률만 보지 말고 최대낙폭과 거래 수를 함께 읽어야 합니다.</p></div>
+              <button id="paper-refresh" class="ghost-button" type="button">데이터 새로고침</button>
+            </section>
+            <section class="experiment-progress" aria-label="전략 실험 진행 단계">
+              <article data-paper-step="account"><span>01</span><div><strong>가상 계좌</strong><small>실험 자본 설정</small></div><em>대기</em></article>
+              <article data-paper-step="strategy"><span>02</span><div><strong>전략 규칙</strong><small>진입 조건 선택</small></div><em>대기</em></article>
+              <article data-paper-step="backtest"><span>03</span><div><strong>백테스트</strong><small>성과와 위험 확인</small></div><em>대기</em></article>
+            </section>
+            <section id="paper-latest-result" class="paper-latest-result empty"><div><span class="section-kicker">LATEST RESULT</span><h2>아직 백테스트 결과가 없습니다</h2><p>아래 3단계를 완료하면 수익률·최대낙폭·승률을 해석해 드립니다.</p></div></section>
+
+            <section class="experiment-steps">
+              <article class="experiment-step" id="paper-step-account">
+                <div class="step-heading"><span>01</span><div><h3>가상 계좌 만들기</h3><p>실제 주문 없이 전략 크기와 손실을 계산할 기준 자본입니다.</p></div><em id="paper-account-status">필수</em></div>
+                <form id="paper-account-form" class="paper-form compact-form">
+                  <label>계좌 이름<input name="name" type="text" value="Pattern Lab" /></label>
+                  <label>초기 자본<input name="initial_cash" type="text" inputmode="numeric" value="10,000,000" data-money-input aria-describedby="initial-cash-readable" /><small id="initial-cash-readable" class="money-readable">1,000만원</small></label>
+                  <button class="primary-button" type="submit">계좌 만들기</button>
+                </form>
+              </article>
+
+              <article class="experiment-step" id="paper-step-strategy">
+                <div class="step-heading"><span>02</span><div><h3>전략 규칙 선택하기</h3><p>처음이라면 프리셋을 고르고 이름만 확인하세요. 세부조건은 나중에 열어도 됩니다.</p></div><em id="paper-strategy-status">다음</em></div>
+                <div class="strategy-basics" aria-label="전략 동작 방식">
+                  <article><span>1</span><div><strong>패턴 발생</strong><p>가격 구조가 완성돼 매수 후보가 됩니다.</p></div></article>
+                  <article><span>2</span><div><strong>근거 확인</strong><p>VWAP·EMA·거래량 등이 같은 상승 방향인지 셉니다.</p></div></article>
+                  <article><span>3</span><div><strong>종가 진입</strong><p>점수와 근거 수를 통과한 날의 종가로 매수합니다.</p></div></article>
+                  <article><span>4</span><div><strong>자동 청산</strong><p>손절·익절·최대 보유일 중 먼저 온 조건으로 매도합니다.</p></div></article>
                 </div>
-                <button id="paper-refresh" class="primary-button" type="button">Reload</button>
-              </div>
-              <div class="paper-grid">
-                <form id="paper-account-form" class="paper-form">
-                  <h3>Account</h3>
-                  <label>
-                    Name
-                    <input name="name" type="text" value="Pattern Lab" />
-                  </label>
-                  <label>
-                    Initial Cash
-                    <input name="initial_cash" type="number" min="0" step="100000" value="10000000" />
-                  </label>
-                  <button class="primary-button" type="submit">Create Account</button>
+                <aside class="strategy-recommendation"><strong>처음이라면 균형형</strong><p>Double Bottom·Inverse H&amp;S 같은 반전 패턴에 VWAP·EMA·Volume Profile 3개 확인을 조합하면 신호 수와 신뢰도의 균형을 잡기 쉽습니다.</p></aside>
+                <div class="strategy-presets">
+                  <button type="button" data-strategy-preset="conservative"><strong>보수적</strong><span>리테스트 필수 · 포지션 10%</span></button>
+                  <button type="button" data-strategy-preset="balanced" class="active"><strong>균형형</strong><span>3개 근거 합의 · 포지션 20%</span></button>
+                  <button type="button" data-strategy-preset="aggressive"><strong>공격적</strong><span>빠른 진입 · 포지션 30%</span></button>
+                </div>
+                <form id="paper-strategy-form" class="paper-form strategy-form">
+                  <label>전략 이름<input name="name" type="text" value="균형형 패턴 전략" /></label>
+                  <details class="advanced-rules">
+                    <summary>세부 규칙 직접 조정 <span>선택사항</span></summary>
+                    <section class="rule-section">
+                      <div class="rule-section-heading"><span>01</span><div><strong>어떤 가격 패턴을 기다릴까요?</strong><p>여러 개를 고르면 그중 하나만 발생해도 다음 확인 단계로 넘어갑니다.</p></div></div>
+                      <div class="rule-choice-grid pattern-rule-grid">
+                        <label><input name="pattern_names" type="checkbox" value="inverse_head_and_shoulders" checked /><span><strong>Inverse H&amp;S</strong><small>하락 후 목선 돌파 · 전형적인 추세 반전</small></span></label>
+                        <label><input name="pattern_names" type="checkbox" value="double_bottom" checked /><span><strong>Double Bottom</strong><small>두 번째 저점 방어 후 목선 돌파</small></span></label>
+                        <label><input name="pattern_names" type="checkbox" value="ascending_triangle" checked /><span><strong>Ascending Triangle</strong><small>수평 저항 돌파 · 상승 지속 후보</small></span></label>
+                        <label><input name="pattern_names" type="checkbox" value="falling_wedge" checked /><span><strong>Falling Wedge</strong><small>하락 쐐기 상단 돌파 · 반등 후보</small></span></label>
+                        <label><input name="pattern_names" type="checkbox" value="symmetrical_triangle" /><span><strong>Symmetrical Triangle</strong><small>수렴 후 상단 돌파 · 방향 확인 필수</small></span></label>
+                      </div>
+                    </section>
+                    <section class="rule-section">
+                      <div class="rule-section-heading"><span>02</span><div><strong>진입 전에 어떤 근거를 확인할까요?</strong><p>선택한 항목 중 아래 최소 근거 수만큼 상승 판정이 일치해야 매수합니다.</p></div></div>
+                      <div class="rule-choice-grid indicator-rule-grid">
+                        <label><input name="selected_indicators" type="checkbox" value="volume_profile" checked /><span><strong>Volume Profile</strong><small>주요 거래 가격대가 지지하는지</small></span></label>
+                        <label><input name="selected_indicators" type="checkbox" value="vwap" checked /><span><strong>VWAP</strong><small>종가가 평균 매입단가 위인지</small></span></label>
+                        <label><input name="selected_indicators" type="checkbox" value="ema" checked /><span><strong>EMA</strong><small>단기선이 중기선 위인지</small></span></label>
+                        <label><input name="selected_indicators" type="checkbox" value="rsi_divergence" /><span><strong>RSI Divergence</strong><small>가격보다 모멘텀이 먼저 회복하는지</small></span></label>
+                        <label><input name="selected_indicators" type="checkbox" value="volume" /><span><strong>Volume Spike</strong><small>돌파 거래량이 평소보다 충분한지</small></span></label>
+                        <label><input name="selected_indicators" type="checkbox" value="htf_trend" /><span><strong>상위 추세</strong><small>더 긴 시간축도 상승 방향인지</small></span></label>
+                      </div>
+                    </section>
+                    <section class="rule-section">
+                      <div class="rule-section-heading"><span>03</span><div><strong>얼마나 엄격하게 사고팔까요?</strong><p>현재 백테스트는 신호일 종가 진입 후 고정 손절·익절·보유기간을 적용합니다.</p></div></div>
+                      <div class="risk-rule-grid">
+                        <label><span>최소 근거 수<small>높을수록 신호가 적고 엄격</small></span><input name="min_indicator_agreement" type="number" min="0" max="6" step="1" value="3" /></label>
+                        <label><span>최소 종합점수<small>0.70 = 70점 이상만</small></span><input name="min_confluence" type="number" min="0" max="1" step="0.05" value="0.70" /></label>
+                        <label><span>종목당 자본 비중<small>0.20 = 남은 현금의 20%</small></span><input name="position_pct" type="number" min="0.01" max="1" step="0.01" value="0.20" /></label>
+                        <label><span>동시 보유 종목<small>분산 가능한 최대 개수</small></span><input name="max_positions" type="number" min="1" max="20" step="1" value="5" /></label>
+                        <label><span>최대 보유일<small>먼저 청산되지 않으면 매도</small></span><input name="hold_days" type="number" min="1" step="1" value="20" /></label>
+                        <label><span>손절률<small>0.08 = 진입가 대비 -8%</small></span><input name="stop_loss_pct" type="number" min="0.01" max="1" step="0.01" value="0.08" /></label>
+                        <label><span>익절률<small>0.20 = 진입가 대비 +20%</small></span><input name="take_profit_pct" type="number" min="0.01" max="3" step="0.01" value="0.20" /></label>
+                        <label class="retest-rule"><input name="require_retest" type="checkbox" /><span><strong>리테스트 확인 필수</strong><small>돌파한 가격대를 다시 지지한 경우만 진입</small></span></label>
+                      </div>
+                    </section>
+                  </details>
+                  <div id="strategy-rule-summary" class="strategy-rule-summary"></div>
+                  <button class="primary-button" type="submit">이 규칙으로 전략 만들기</button>
                 </form>
-                <form id="paper-strategy-form" class="paper-form">
-                  <h3>Strategy</h3>
-                  <label>
-                    Name
-                    <input name="name" type="text" value="Pattern + 3 Votes" />
-                  </label>
-                  <fieldset>
-                    <legend>Patterns</legend>
-                    <label><input name="pattern_names" type="checkbox" value="inverse_head_and_shoulders" checked /> Inverse H&S</label>
-                    <label><input name="pattern_names" type="checkbox" value="double_bottom" checked /> Double Bottom</label>
-                    <label><input name="pattern_names" type="checkbox" value="ascending_triangle" checked /> Ascending Triangle</label>
-                    <label><input name="pattern_names" type="checkbox" value="falling_wedge" checked /> Falling Wedge</label>
-                    <label><input name="pattern_names" type="checkbox" value="symmetrical_triangle" /> Symmetrical Triangle</label>
-                  </fieldset>
-                  <fieldset>
-                    <legend>Indicator Votes</legend>
-                    <label><input name="selected_indicators" type="checkbox" value="volume_profile" checked /> Volume Profile</label>
-                    <label><input name="selected_indicators" type="checkbox" value="vwap" checked /> VWAP</label>
-                    <label><input name="selected_indicators" type="checkbox" value="ema" checked /> EMA</label>
-                    <label><input name="selected_indicators" type="checkbox" value="rsi_divergence" /> RSI Divergence</label>
-                    <label><input name="selected_indicators" type="checkbox" value="volume" /> Volume Spike</label>
-                    <label><input name="selected_indicators" type="checkbox" value="htf_trend" /> HTF Trend</label>
-                  </fieldset>
-                  <div class="paper-form-row">
-                    <label>
-                      Min Votes
-                      <input name="min_indicator_agreement" type="number" min="0" max="6" step="1" value="3" />
-                    </label>
-                    <label>
-                      Min Score
-                      <input name="min_confluence" type="number" min="0" max="1" step="0.05" value="0.70" />
-                    </label>
-                  </div>
-                  <div class="paper-form-row">
-                    <label>
-                      Position %
-                      <input name="position_pct" type="number" min="0.01" max="1" step="0.01" value="0.20" />
-                    </label>
-                    <label>
-                      Hold Days
-                      <input name="hold_days" type="number" min="1" step="1" value="20" />
-                    </label>
-                  </div>
-                  <label class="toggle-row paper-toggle"><input name="require_retest" type="checkbox" /> Retest required</label>
-                  <button class="primary-button" type="submit">Create Strategy</button>
+              </article>
+
+              <article class="experiment-step" id="paper-step-backtest">
+                <div class="step-heading"><span>03</span><div><h3>과거 데이터로 검증하기</h3><p>계좌와 전략을 고르고 최소 1년을 검증하세요.</p></div><em id="paper-backtest-status">마지막</em></div>
+                <form id="paper-backtest-form" class="paper-form compact-form backtest-form">
+                  <label>계좌<select name="account_id" id="paper-account-select"></select></label>
+                  <label>전략<select name="strategy_id" id="paper-strategy-select"></select></label>
+                  <label>검증 기간<input name="years" type="number" min="1" max="5" step="1" value="1" /></label>
+                  <button class="primary-button" type="submit">백테스트 실행</button>
                 </form>
-                <form id="paper-backtest-form" class="paper-form">
-                  <h3>Backtest</h3>
-                  <label>
-                    Account
-                    <select name="account_id" id="paper-account-select"></select>
-                  </label>
-                  <label>
-                    Strategy
-                    <select name="strategy_id" id="paper-strategy-select"></select>
-                  </label>
-                  <label>
-                    Years
-                    <input name="years" type="number" min="1" max="5" step="1" value="1" />
-                  </label>
-                  <button class="primary-button" type="submit">Run Backtest</button>
-                </form>
-              </div>
+              </article>
+            </section>
+
+            <section class="panel experiment-history">
+              <div class="panel-header"><div><h2>실험 기록</h2><p>만든 계좌·전략·백테스트를 다시 선택할 수 있습니다.</p></div></div>
               <div class="paper-results">
-                <div>
-                  <h3>Accounts</h3>
+                <div><h3>가상 계좌</h3>
                   <div id="paper-accounts" class="paper-list"></div>
                 </div>
-                <div>
-                  <h3>Strategies</h3>
+                <div><h3>전략</h3>
                   <div id="paper-strategies" class="paper-list"></div>
                 </div>
-                <div>
-                  <h3>Recent Backtests</h3>
+                <div><h3>백테스트</h3>
                   <div id="paper-backtests" class="paper-list"></div>
                 </div>
               </div>
@@ -342,6 +473,15 @@
           </section>
         </div>
       </main>
+    </div>
+    <div id="indicator-modal" class="indicator-modal" role="dialog" aria-modal="true" aria-labelledby="indicator-modal-title" hidden>
+      <div class="indicator-modal-backdrop" data-indicator-close></div>
+      <section class="indicator-modal-panel">
+        <header><div><span id="indicator-modal-category" class="section-kicker">MARKET INDICATOR</span><h2 id="indicator-modal-title">지표 차트</h2><p id="indicator-modal-summary"></p></div><button type="button" class="modal-close" data-indicator-close aria-label="닫기">×</button></header>
+        <div class="indicator-modal-toolbar"><div id="indicator-modal-value" class="indicator-modal-value"></div><div class="indicator-range-buttons"><button type="button" data-indicator-range="30">30개</button><button type="button" data-indicator-range="90" class="active">90개</button><button type="button" data-indicator-range="180">180개</button></div></div>
+        <div id="indicator-modal-chart" class="indicator-modal-chart" aria-label="지표 시계열 차트"></div>
+        <div id="indicator-modal-guide" class="indicator-modal-guide"></div>
+      </section>
     </div>
     <script src="/static/app.js"></script>
   </body>

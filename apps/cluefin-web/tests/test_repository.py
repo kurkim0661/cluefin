@@ -1,6 +1,11 @@
 from decimal import Decimal
 
-from cluefin_web.repository import DashboardRepository, _indicator_votes_from_signal_row, _strategy_config_from_payload
+from cluefin_web.repository import (
+    DashboardRepository,
+    _build_market_pulse,
+    _indicator_votes_from_signal_row,
+    _strategy_config_from_payload,
+)
 
 
 class FakeQueryResult:
@@ -292,3 +297,50 @@ def test_indicator_votes_from_signal_row_uses_technical_and_event_context() -> N
     assert votes["volume"] == "bullish"
     assert votes["htf_trend"] == "bullish"
     assert votes["retest"] == "bullish"
+
+
+def test_market_pulse_builds_regime_sections_and_missing_connections() -> None:
+    definitions = [
+        {
+            "indicator_id": "us_real_yield_10y",
+            "name_ko": "미국 10년 실질금리",
+            "domain": "global",
+            "category": "rates",
+            "provider": "fred",
+            "unit": "%",
+            "frequency": "daily",
+            "higher_is": "risk_off",
+            "importance": 3,
+            "availability": "public",
+        },
+        {
+            "indicator_id": "btc_spot_etf_flow",
+            "name_ko": "비트코인 현물 ETF 순유입",
+            "domain": "crypto",
+            "category": "flows",
+            "provider": "licensed",
+            "unit": "USD",
+            "frequency": "daily",
+            "higher_is": "risk_on",
+            "importance": 3,
+            "availability": "licensed",
+        },
+    ]
+    observations = [
+        {"indicator_id": "us_real_yield_10y", "period": "2026-08-25", "value": 2.4, "provider": "fred"},
+        {"indicator_id": "us_real_yield_10y", "period": "2026-08-26", "value": 2.3, "provider": "fred"},
+    ]
+
+    pulse = _build_market_pulse(definitions, observations)
+
+    assert pulse["regime"]["key"] == "supportive"
+    assert pulse["coverage"]["observed"] == 1
+    assert pulse["coverage"]["connection_required"] == 1
+    assert pulse["sections"]["rates_liquidity"]["tone"] == "positive"
+    real_yield = next(item for item in pulse["indicators"] if item["indicator_id"] == "us_real_yield_10y")
+    assert real_yield["impact_score"] > 0
+    assert real_yield["impact_label"] == "우호적"
+    assert "하락" in real_yield["impact_explanation"]
+    assert real_yield["impact_confidence"] == "low"
+    assert real_yield["level_label"].startswith("현재 수준")
+    assert pulse["unavailable"][0]["indicator_id"] == "btc_spot_etf_flow"

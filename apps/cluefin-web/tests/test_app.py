@@ -12,6 +12,19 @@ class FakeRepository:
             "sentiment": [],
         }
 
+    def market_pulse(self) -> dict:
+        return {
+            "regime": {"key": "mixed", "label": "혼조", "headline": "지표 혼조", "summary": "확인 필요", "score": 0},
+            "coverage": {"observed": 1, "total": 2, "fresh": 1, "public_missing": 0, "connection_required": 1},
+            "sections": {},
+            "drivers": [],
+            "indicators": [],
+            "unavailable": [],
+        }
+
+    def latest_research_report(self) -> dict | None:
+        return None
+
     def pattern_performance(self) -> list[dict]:
         return [{"pattern_name": "double_bottom"}]
 
@@ -71,6 +84,8 @@ def test_dashboard_routes_return_html_and_json() -> None:
 
     assert client.get("/").status_code == 200
     assert client.get("/api/dashboard").json()["overview"]["symbols"] == 1
+    assert client.get("/api/market-pulse").json()["regime"]["label"] == "혼조"
+    assert client.get("/api/research-report").json() is None
     assert client.get("/api/pattern-performance").json()[0]["pattern_name"] == "double_bottom"
     assert client.get("/api/signals").json()[0]["symbol"] == "005930"
     assert client.get("/api/universe").json()[0]["name"] == "삼성전자"
@@ -96,12 +111,15 @@ def test_dashboard_tabs_have_targets_and_click_handler() -> None:
     html = client.get("/").text
     script = (PACKAGE_DIR / "static" / "app.js").read_text(encoding="utf-8")
 
-    for tab in ("overview", "signals", "patterns", "universe", "paper"):
+    for tab in ("pulse", "overview", "signals", "patterns", "universe", "paper"):
         assert f'data-tab="{tab}"' in html
         assert f'id="{tab}-panel"' in html
         assert f'aria-controls="{tab}-panel"' in html
 
     assert "setActiveTab" in script
+    assert "renderMarketPulse" in script
+    assert "renderDriverGrid" in script
+    assert 'id="driver-grid"' in html
     assert 'querySelectorAll("[data-tab]")' in script
     assert "renderUniverse" in script
     assert "rsi_divergence" in script
@@ -142,6 +160,28 @@ def test_dashboard_tabs_have_targets_and_click_handler() -> None:
     assert "selected_indicators" in script
     assert "loadPaperDashboard" in script
     assert "runPaperBacktest" in script
+    assert 'id="pattern-card-grid"' in html
+    assert 'id="universe-watchlist"' in html
+    assert 'data-strategy-preset="balanced"' in html
+    assert "applyStrategyPreset" in script
+    assert "patternVerdict" in script
+    assert "priorityLabel" in script
+    assert 'id="indicator-modal"' in html
+    assert "openIndicatorChart" in script
+    assert "drawIndicatorSeriesChart" in script
+    assert "initializeIndicatorSeriesInteractions" in script
+    assert "data-money-input" in html
+    assert 'value="10,000,000"' in html
+    assert 'id="strategy-rule-summary"' in html
+    assert 'name="stop_loss_pct"' in html
+    assert 'name="take_profit_pct"' in html
+    assert "renderStrategyRuleSummary" in script
+    assert "koreanMoneyLabel" in script
+    assert 'id="ai-report-content"' in html
+    assert "renderResearchReport" in script
+
+    for indicator in ("vwap", "ema_20", "ema_50", "ema_200", "volume", "rsi", "profile", "patterns"):
+        assert f'data-indicator="{indicator}" checked' not in html
 
 
 def test_chart_has_independent_y_axis_range_controls() -> None:

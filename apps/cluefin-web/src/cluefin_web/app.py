@@ -30,6 +30,14 @@ def create_app(repository: DashboardRepository | None = None) -> FastAPI:
     def dashboard() -> dict:
         return app.state.repository.snapshot()
 
+    @app.get("/api/market-pulse")
+    def market_pulse() -> dict:
+        return app.state.repository.market_pulse()
+
+    @app.get("/api/research-report")
+    def research_report() -> dict | None:
+        return app.state.repository.latest_research_report()
+
     @app.get("/api/pattern-performance")
     def pattern_performance() -> list[dict]:
         return app.state.repository.pattern_performance()
