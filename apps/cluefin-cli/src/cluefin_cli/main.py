@@ -1,6 +1,7 @@
 import click
 from rich.console import Console
 
+from cluefin_cli.commands.bitcoin import bitcoin
 from cluefin_cli.commands.fundamental_analysis import fundamental_analysis
 from cluefin_cli.commands.technical_analysis import technical_analysis
 from cluefin_cli.commands.xbrl_analysis import xbrl_analysis
@@ -19,6 +20,7 @@ def cli(debug: bool):
     console.print("Use --help to see available commands")
 
 
+cli.add_command(bitcoin)
 cli.add_command(technical_analysis)
 cli.add_command(fundamental_analysis)
 cli.add_command(xbrl_analysis)
