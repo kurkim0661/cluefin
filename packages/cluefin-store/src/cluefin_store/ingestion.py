@@ -59,7 +59,10 @@ class TopBackfillConfig:
     def resolved_universe_name(self) -> str:
         if self.universe_name:
             return self.universe_name
-        return f"kr_{self.ranking_type.lower()}_top{self.count}_{self.ranking_duration}"
+        country = self.market_country.lower()
+        if self.market_country == "US" and self.ranking_type == "MARKET_CAP":
+            return f"us_market_cap_top{self.count}_current"
+        return f"{country}_{self.ranking_type.lower()}_top{self.count}_{self.ranking_duration}"
 
 
 def backfill_top_ranked(
@@ -69,7 +72,7 @@ def backfill_top_ranked(
     config: TopBackfillConfig,
     run_id: UUID,
     collected_at: datetime,
-) -> dict[str, int]:
+) -> dict[str, int | str]:
     ranked_symbols = provider.fetch_ranked_symbols(
         ranking_type=config.ranking_type,
         market_country=config.market_country,
@@ -100,7 +103,7 @@ def backfill_top_ranked(
         config=analysis_config,
     )
 
-    summary: dict[str, int] = {}
+    summary: dict[str, int | str] = {"run_id": str(run_id)}
     members = _build_universe_members(
         provider=provider.provider_name,
         ranked_symbols=ranked_symbols,

@@ -15,6 +15,9 @@ def test_schema_includes_core_databases_and_tables() -> None:
     assert "rsi_14 Nullable(Float64)" in sql
     assert "rsi_divergence LowCardinality(String)" in sql
     assert "CREATE TABLE IF NOT EXISTS market.symbol_sentiment_items" in sql
+    assert "CREATE TABLE IF NOT EXISTS market.indicator_definitions" in sql
+    assert "CREATE TABLE IF NOT EXISTS market.indicator_observations" in sql
+    assert "CREATE TABLE IF NOT EXISTS market.daily_research_reports" in sql
     assert "CREATE VIEW IF NOT EXISTS market.symbol_sentiment_summary" in sql
     assert "CREATE TABLE IF NOT EXISTS market.daily_pattern_events" in sql
     assert "CREATE TABLE IF NOT EXISTS market.daily_pattern_outcomes" in sql
@@ -29,4 +32,5 @@ def test_schema_includes_core_databases_and_tables() -> None:
 def test_table_names_are_extracted_from_schema() -> None:
     assert "market.daily_ohlcv" in table_names()
     assert "market.daily_volume_profile_levels" in table_names()
+    assert "market.indicator_observations" in table_names()
     assert "portfolio.paper_backtest_runs" in table_names()

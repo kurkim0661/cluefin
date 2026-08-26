@@ -21,6 +21,51 @@ class InsertableRecord:
 
 
 @dataclass(frozen=True, slots=True)
+class IndicatorDefinition(InsertableRecord):
+    indicator_id: str
+    name_ko: str
+    name_en: str
+    domain: str
+    category: str
+    provider: str
+    source_series: str
+    unit: str
+    frequency: str
+    higher_is: str
+    importance: int
+    description_ko: str
+    interpretation_ko: str
+    source_url: str
+    availability: str
+    updated_at: datetime
+
+
+@dataclass(frozen=True, slots=True)
+class IndicatorObservation(InsertableRecord):
+    period: date
+    indicator_id: str
+    provider: str
+    value: float
+    metadata_json: str
+    run_id: UUID
+    collected_at: datetime
+
+
+@dataclass(frozen=True, slots=True)
+class DailyResearchReport(InsertableRecord):
+    report_date: date
+    report_id: UUID
+    model: str
+    status: str
+    title: str
+    markdown: str
+    summary_json: str
+    source_snapshot_json: str
+    prompt_version: str
+    generated_at: datetime
+
+
+@dataclass(frozen=True, slots=True)
 class DailyUniverseMember(InsertableRecord):
     trade_date: date
     provider: str

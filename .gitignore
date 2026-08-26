@@ -83,7 +83,7 @@ CLAUDE.local.md
 
 .ruff_cache/
 .uv-cache/
-data/
+/data/
 
 .entire/
 .worktrees/

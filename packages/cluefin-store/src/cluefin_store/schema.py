@@ -176,6 +176,62 @@ SCHEMA_STATEMENTS: tuple[str, ...] = (
     ORDER BY (base_currency, quote_currency, provider, trade_date)
     """,
     """
+    CREATE TABLE IF NOT EXISTS market.indicator_definitions
+    (
+        indicator_id String,
+        name_ko String,
+        name_en String,
+        domain LowCardinality(String),
+        category LowCardinality(String),
+        provider LowCardinality(String),
+        source_series String,
+        unit String,
+        frequency LowCardinality(String),
+        higher_is LowCardinality(String),
+        importance UInt8,
+        description_ko String,
+        interpretation_ko String,
+        source_url String,
+        availability LowCardinality(String),
+        updated_at DateTime64(3, 'Asia/Seoul')
+    )
+    ENGINE = ReplacingMergeTree(updated_at)
+    ORDER BY indicator_id
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS market.indicator_observations
+    (
+        period Date,
+        indicator_id String,
+        provider LowCardinality(String),
+        value Float64,
+        metadata_json String,
+        run_id UUID,
+        collected_at DateTime64(3, 'Asia/Seoul')
+    )
+    ENGINE = ReplacingMergeTree(collected_at)
+    PARTITION BY toYYYYMM(period)
+    ORDER BY (indicator_id, provider, period)
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS market.daily_research_reports
+    (
+        report_date Date,
+        report_id UUID,
+        model LowCardinality(String),
+        status LowCardinality(String),
+        title String,
+        markdown String,
+        summary_json String,
+        source_snapshot_json String,
+        prompt_version LowCardinality(String),
+        generated_at DateTime64(3, 'Asia/Seoul')
+    )
+    ENGINE = ReplacingMergeTree(generated_at)
+    PARTITION BY toYYYYMM(report_date)
+    ORDER BY report_date
+    """,
+    """
     CREATE TABLE IF NOT EXISTS market.daily_technical_features
     (
         trade_date Date,

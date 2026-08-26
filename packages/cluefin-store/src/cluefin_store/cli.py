@@ -8,10 +8,18 @@ import click
 
 from cluefin_store.analysis import PatternAnalysisConfig, pattern_collection_plan
 from cluefin_store.db import ClickHouseSettings, ClickHouseStore
+from cluefin_store.indicators import (
+    INDICATOR_CATALOG,
+    catalog_summary,
+    collect_market_indicators,
+    default_indicator_providers,
+    import_indicator_csv,
+)
 from cluefin_store.ingestion import TopBackfillConfig, backfill_top_ranked
 from cluefin_store.schema import SCHEMA_STATEMENTS
 from cluefin_store.sentiment import GoogleNewsRssSearchProvider, build_sentiment_items, sentiment_query
 from cluefin_store.toss import TossMarketDataProvider
+from cluefin_store.toss_us import TossUsMarketCapProvider
 
 
 @click.group()
@@ -44,6 +52,95 @@ def init_command(dry_run: bool) -> None:
     click.echo(f"Applied schema statements: {applied}")
 
 
+@cli.command(name="update-indicators")
+@click.option("--start-date", type=click.DateTime(formats=["%Y-%m-%d"]))
+@click.option("--end-date", type=click.DateTime(formats=["%Y-%m-%d"]))
+@click.option(
+    "--provider",
+    "provider_names",
+    multiple=True,
+    type=click.Choice(
+        ["all", "fred", "defillama", "coinmetrics", "coingecko", "binance", "customs", "ecos", "dart", "licensed"]
+    ),
+    default=("all",),
+    show_default=True,
+)
+@click.option("--strict", is_flag=True, help="Stop immediately when one provider fails.")
+@click.option("--dry-run", is_flag=True, help="Print catalog and collection plan without network or database access.")
+def update_indicators_command(
+    start_date, end_date, provider_names: tuple[str, ...], strict: bool, dry_run: bool
+) -> None:
+    """Collect macro, Korean-market, equity, and crypto indicators."""
+    resolved_end = date(end_date.year, end_date.month, end_date.day) if end_date else date.today()
+    resolved_start = (
+        date(start_date.year, start_date.month, start_date.day) if start_date else resolved_end - timedelta(days=400)
+    )
+    if resolved_start > resolved_end:
+        raise click.BadParameter("start-date must not be after end-date", param_hint="--start-date")
+
+    store = None if dry_run else ClickHouseStore()
+    available_providers = {provider.provider_name: provider for provider in default_indicator_providers(store=store)}
+    selected_names = tuple(available_providers) if "all" in provider_names else tuple(dict.fromkeys(provider_names))
+    plan = {
+        "start_date": resolved_start.isoformat(),
+        "end_date": resolved_end.isoformat(),
+        "providers": list(selected_names),
+        "catalog": catalog_summary(),
+        "tables": ["market.indicator_definitions", "market.indicator_observations"],
+        "strict": strict,
+    }
+    if dry_run:
+        click.echo(json.dumps(plan, ensure_ascii=False, indent=2, sort_keys=True))
+        return
+
+    assert store is not None
+    store.apply_schema()
+    summary = collect_market_indicators(
+        store=store,
+        providers=tuple(available_providers[name] for name in selected_names),
+        start_date=resolved_start,
+        end_date=resolved_end,
+        run_id=uuid4(),
+        collected_at=datetime.now(),
+        catalog=INDICATOR_CATALOG,
+        strict=strict,
+    )
+    click.echo(json.dumps(summary, ensure_ascii=False, indent=2, sort_keys=True))
+
+
+@cli.command(name="import-indicators")
+@click.option("--file", "input_file", type=click.Path(exists=True, dir_okay=False, path_type=str), required=True)
+@click.option("--dry-run", is_flag=True, help="Validate and report the file without writing ClickHouse rows.")
+def import_indicators_command(input_file: str, dry_run: bool) -> None:
+    """Import normalized licensed or manually supplied indicator observations."""
+    with open(input_file, encoding="utf-8-sig") as handle:
+        csv_text = handle.read()
+    if dry_run:
+        summary = import_indicator_csv(
+            store=_DryRunIndicatorStore(),
+            csv_text=csv_text,
+            run_id=uuid4(),
+            collected_at=datetime.now(),
+        )
+        summary["file"] = input_file
+        click.echo(json.dumps(summary, ensure_ascii=False, indent=2, sort_keys=True))
+        return
+    store = ClickHouseStore()
+    store.apply_schema()
+    summary = import_indicator_csv(
+        store=store,
+        csv_text=csv_text,
+        run_id=uuid4(),
+        collected_at=datetime.now(),
+    )
+    click.echo(json.dumps(summary, ensure_ascii=False, indent=2, sort_keys=True))
+
+
+class _DryRunIndicatorStore:
+    def insert_records(self, _table: str, records) -> int:
+        return len(records)
+
+
 @cli.command(name="pattern-plan")
 @click.option("--start-date", type=click.DateTime(formats=["%Y-%m-%d"]), required=True)
 @click.option("--end-date", type=click.DateTime(formats=["%Y-%m-%d"]), required=True)
@@ -61,7 +158,8 @@ def pattern_plan(start_date, end_date, symbol: tuple[str, ...], warmup_calendar_
 
 
 @cli.command(name="backfill-top")
-@click.option("--provider", type=click.Choice(["toss"]), default="toss", show_default=True)
+@click.option("--provider", type=click.Choice(["toss", "toss_us"]), default="toss", show_default=True)
+@click.option("--market-country", type=click.Choice(["KR", "US"]), default="KR", show_default=True)
 @click.option("--end-date", type=click.DateTime(formats=["%Y-%m-%d"]), required=True)
 @click.option("--years", type=int, default=1, show_default=True)
 @click.option("--count", type=int, default=50, show_default=True)
@@ -71,6 +169,7 @@ def pattern_plan(start_date, end_date, symbol: tuple[str, ...], warmup_calendar_
 @click.option("--dry-run", is_flag=True, help="Print the backfill plan without connecting to Toss or ClickHouse.")
 def backfill_top_command(
     provider: str,
+    market_country: str,
     end_date,
     years: int,
     count: int,
@@ -86,10 +185,12 @@ def backfill_top_command(
         count=count,
         ranking_type=ranking_type,
         ranking_duration=ranking_duration,
+        market_country=market_country,
         warmup_calendar_days=warmup_calendar_days,
     )
     plan = {
         "provider": provider,
+        "market_country": config.market_country,
         "ranking_type": config.ranking_type,
         "ranking_duration": config.ranking_duration,
         "count": config.count,
@@ -111,7 +212,7 @@ def backfill_top_command(
         click.echo(json.dumps(plan, ensure_ascii=False, indent=2, sort_keys=True))
         return
 
-    market_provider = TossMarketDataProvider.from_env()
+    market_provider = TossMarketDataProvider.from_env() if provider == "toss" else TossUsMarketCapProvider.from_env()
     store = ClickHouseStore()
     store.apply_schema()
     summary = backfill_top_ranked(
