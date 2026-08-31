@@ -1,5 +1,7 @@
 from decimal import Decimal
 
+import pytest
+
 from cluefin_web.repository import (
     DashboardRepository,
     _build_market_pulse,
@@ -344,3 +346,208 @@ def test_market_pulse_builds_regime_sections_and_missing_connections() -> None:
     assert real_yield["impact_confidence"] == "low"
     assert real_yield["level_label"].startswith("현재 수준")
     assert pulse["unavailable"][0]["indicator_id"] == "btc_spot_etf_flow"
+
+
+class FakeReportClient:
+    def __init__(self) -> None:
+        self.parameters: dict | None = None
+
+    def query(self, sql: str, parameters: dict | None = None) -> FakeQueryResult:
+        self.parameters = parameters
+        if "length(markdown)" in sql:
+            return FakeQueryResult(
+                [
+                    (
+                        "2026-08-27",
+                        "report-2",
+                        "gpt",
+                        "validated",
+                        "오늘의 시장 리포트",
+                        "cluefin-daily-v1",
+                        "2026-08-27 09:10:00",
+                        2400,
+                    ),
+                    (
+                        "2026-08-27",
+                        "report-1",
+                        "gpt",
+                        "partial",
+                        "오늘의 시장 리포트",
+                        "cluefin-daily-v1",
+                        "2026-08-27 08:00:00",
+                        1200,
+                    ),
+                ],
+                [
+                    "report_date",
+                    "report_id",
+                    "model",
+                    "status",
+                    "title",
+                    "prompt_version",
+                    "generated_at",
+                    "markdown_chars",
+                ],
+            )
+        return FakeQueryResult(
+            [
+                (
+                    "2026-08-27",
+                    "report-1",
+                    "gpt",
+                    "partial",
+                    "제목",
+                    "# 본문",
+                    "{}",
+                    "cluefin-daily-v1",
+                    "2026-08-27 08:00:00",
+                )
+            ],
+            [
+                "report_date",
+                "report_id",
+                "model",
+                "status",
+                "title",
+                "markdown",
+                "summary_json",
+                "prompt_version",
+                "generated_at",
+            ],
+        )
+
+
+def test_research_report_history_keeps_every_stored_run() -> None:
+    repository = DashboardRepository(FakeReportClient())
+
+    history = repository.research_report_history(limit=10)
+
+    assert [row["report_id"] for row in history] == ["report-2", "report-1"]
+    assert history[0]["markdown_chars"] == 2400
+
+
+def test_research_report_detail_is_queried_by_parameter() -> None:
+    client = FakeReportClient()
+    repository = DashboardRepository(client)
+
+    report = repository.research_report("report-1")
+
+    assert report["markdown"] == "# 본문"
+    assert client.parameters == {"report_id": "report-1"}
+
+
+class FakeEstateClient:
+    def __init__(self, rows: list[tuple], columns: list[str]) -> None:
+        self.rows = rows
+        self.columns = columns
+        self.sql: str = ""
+        self.parameters: dict | None = None
+
+    def query(self, sql: str, parameters: dict | None = None) -> FakeQueryResult:
+        self.sql = sql
+        self.parameters = parameters
+        return FakeQueryResult(self.rows, self.columns)
+
+
+def _estate_repository(rows, columns=("bucket", "series", "value", "unit")):
+    client = FakeEstateClient(list(rows), list(columns))
+    return DashboardRepository(client), client
+
+
+def test_real_estate_query_builds_series_per_dimension_value() -> None:
+    repository, client = _estate_repository(
+        [
+            ("2026-05-01", "서울", 102.7, "2026.01=100"),
+            ("2026-05-01", "경기", 101.5, "2026.01=100"),
+            ("2026-06-01", "서울", 104.0, "2026.01=100"),
+            ("2026-06-01", "경기", 102.3, "2026.01=100"),
+        ]
+    )
+
+    result = repository.real_estate_query(
+        {
+            "metric_ids": ["house_sale_price_index"],
+            "series_dimension": "region",
+            "filters": {"region": ["서울", "경기"], "property_type": ["아파트"]},
+            "bucket": "month",
+        }
+    )
+
+    assert result["buckets"] == ["2026-05-01", "2026-06-01"]
+    assert {item["name"]: item["points"] for item in result["series"]} == {
+        "서울": [102.7, 104.0],
+        "경기": [101.5, 102.3],
+    }
+    assert "toStartOfMonth(period)" in client.sql
+    assert client.parameters["f0"] == ["house_sale_price_index"]
+    assert client.parameters["f2"] == ["아파트"]
+
+
+def test_real_estate_query_supports_change_and_rebase_transforms() -> None:
+    rows = [
+        ("2026-04-01", "서울", 100.0, "idx"),
+        ("2026-05-01", "서울", 102.0, "idx"),
+        ("2026-06-01", "서울", 105.06, "idx"),
+    ]
+    repository, _ = _estate_repository(rows)
+    change = repository.real_estate_query(
+        {"metric_ids": ["m"], "series_dimension": "region", "bucket": "month", "transform": "change"}
+    )
+    repository, _ = _estate_repository(rows)
+    rebase = repository.real_estate_query(
+        {"metric_ids": ["m"], "series_dimension": "region", "bucket": "month", "transform": "rebase"}
+    )
+
+    assert change["unit"] == "%"
+    assert change["series"][0]["points"] == [None, 2.0, 3.0]
+    assert rebase["series"][0]["points"] == [100.0, 102.0, 105.06]
+
+
+def test_real_estate_query_year_over_year_uses_twelve_month_lag() -> None:
+    rows = [(f"2025-{month:02d}-01", "서울", 100.0, "idx") for month in range(1, 13)]
+    rows.append(("2026-01-01", "서울", 110.0, "idx"))
+    repository, _ = _estate_repository(rows)
+
+    result = repository.real_estate_query(
+        {"metric_ids": ["m"], "series_dimension": "region", "bucket": "month", "transform": "yoy"}
+    )
+
+    assert result["series"][0]["points"][-1] == 10.0
+    assert result["series"][0]["points"][0] is None
+
+
+def test_real_estate_ratio_transform_divides_two_metrics() -> None:
+    repository, client = _estate_repository(
+        [
+            ("2026-06-01", "서울", 96.0, "idx", "jeonse"),
+            ("2026-06-01", "서울", 120.0, "idx", "sale"),
+        ],
+        columns=("bucket", "series", "value", "unit", "metric_id"),
+    )
+
+    result = repository.real_estate_query(
+        {
+            "metric_ids": ["jeonse", "sale"],
+            "series_dimension": "region",
+            "bucket": "month",
+            "transform": "ratio",
+        }
+    )
+
+    assert result["unit"] == "%"
+    assert result["series"][0]["points"] == [80.0]
+    assert "metric_id" in client.sql
+
+
+def test_real_estate_query_rejects_unknown_options() -> None:
+    repository, _ = _estate_repository([])
+
+    for payload in (
+        {"metric_ids": [], "bucket": "month"},
+        {"metric_ids": ["m"], "bucket": "daily"},
+        {"metric_ids": ["m"], "series_dimension": "unknown"},
+        {"metric_ids": ["m"], "transform": "unknown"},
+        {"metric_ids": ["m"], "transform": "ratio"},
+    ):
+        with pytest.raises(ValueError):
+            repository.real_estate_query(payload)

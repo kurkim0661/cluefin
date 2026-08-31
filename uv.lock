@@ -666,6 +666,7 @@ name = "cluefin-web"
 version = "0.1.0"
 source = { editable = "apps/cluefin-web" }
 dependencies = [
+    { name = "cluefin-agent" },
     { name = "cluefin-store" },
     { name = "fastapi" },
     { name = "httpx2" },
@@ -674,6 +675,7 @@ dependencies = [
 
 [package.metadata]
 requires-dist = [
+    { name = "cluefin-agent", editable = "packages/cluefin-agent" },
     { name = "cluefin-store", editable = "packages/cluefin-store" },
     { name = "fastapi", specifier = ">=0.124.0" },
     { name = "httpx2", specifier = ">=0.28.1" },

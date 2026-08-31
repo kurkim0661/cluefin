@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import date
 from pathlib import Path
 
 import uvicorn
@@ -7,15 +8,20 @@ from fastapi import FastAPI, HTTPException
 from fastapi.responses import HTMLResponse
 from fastapi.staticfiles import StaticFiles
 
+from cluefin_web.report_jobs import ReportGenerationJob
 from cluefin_web.repository import DashboardRepository
 
 PACKAGE_DIR = Path(__file__).parent
 
 
-def create_app(repository: DashboardRepository | None = None) -> FastAPI:
+def create_app(
+    repository: DashboardRepository | None = None,
+    report_job: ReportGenerationJob | None = None,
+) -> FastAPI:
     app = FastAPI(title="Cluefin Web")
     repo = repository or DashboardRepository.from_env()
     app.state.repository = repo
+    app.state.report_job = report_job or ReportGenerationJob()
     app.mount("/static", StaticFiles(directory=PACKAGE_DIR / "static"), name="static")
 
     @app.get("/healthz")
@@ -37,6 +43,46 @@ def create_app(repository: DashboardRepository | None = None) -> FastAPI:
     @app.get("/api/research-report")
     def research_report() -> dict | None:
         return app.state.repository.latest_research_report()
+
+    @app.get("/api/research-reports")
+    def research_reports(limit: int = 30) -> list[dict]:
+        return app.state.repository.research_report_history(limit)
+
+    @app.get("/api/research-reports/status")
+    def research_report_status() -> dict:
+        return app.state.report_job.status()
+
+    @app.post("/api/research-reports/generate")
+    def generate_research_report(payload: dict | None = None) -> dict:
+        raw_date = (payload or {}).get("report_date")
+        try:
+            report_date = date.fromisoformat(raw_date) if raw_date else date.today()
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail="report_date는 YYYY-MM-DD 형식이어야 합니다.") from exc
+        try:
+            return app.state.report_job.start(report_date)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        except RuntimeError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+    @app.get("/api/research-reports/{report_id}")
+    def research_report_detail(report_id: str) -> dict:
+        report = app.state.repository.research_report(report_id)
+        if report is None:
+            raise HTTPException(status_code=404, detail="해당 리포트를 찾을 수 없습니다.")
+        return report
+
+    @app.get("/api/real-estate/meta")
+    def real_estate_meta() -> dict:
+        return app.state.repository.real_estate_meta()
+
+    @app.post("/api/real-estate/query")
+    def real_estate_query(payload: dict) -> dict:
+        try:
+            return app.state.repository.real_estate_query(payload)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     @app.get("/api/pattern-performance")
     def pattern_performance() -> list[dict]:

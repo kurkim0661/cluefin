@@ -4,6 +4,7 @@ version = "0.1.0"
 description = "Browser dashboard for Cluefin market signals"
 requires-python = ">=3.10"
 dependencies = [
+    "cluefin-agent",
     "cluefin-store",
     "fastapi>=0.124.0",
     "httpx2>=0.28.1",

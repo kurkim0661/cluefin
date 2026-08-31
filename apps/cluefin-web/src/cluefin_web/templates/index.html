@@ -24,6 +24,7 @@
           <button class="nav-item" type="button" role="tab" aria-selected="false" aria-controls="patterns-panel" data-tab="patterns"><span>04</span> 패턴 검증</button>
           <button class="nav-item" type="button" role="tab" aria-selected="false" aria-controls="universe-panel" data-tab="universe"><span>05</span> 종목 탐색</button>
           <button class="nav-item" type="button" role="tab" aria-selected="false" aria-controls="paper-panel" data-tab="paper"><span>06</span> 전략 실험</button>
+          <button class="nav-item" type="button" role="tab" aria-selected="false" aria-controls="estate-panel" data-tab="estate"><span>07</span> 부동산</button>
         </nav>
         <div class="filters">
           <p class="filter-title">시그널 빠른 필터</p>
@@ -103,8 +104,22 @@
             </section>
 
             <section class="ai-brief-panel">
-              <div class="ai-brief-heading"><div><span class="section-kicker">LANGGRAPH DAILY BRIEF</span><h2>AI 일일 분석 리포트</h2><p>거시·한국/미국 주식·코인·패턴·시그널을 같은 스냅샷으로 종합합니다.</p></div><span id="ai-report-status" class="freshness missing">리포트 대기</span></div>
-              <div id="ai-report-content" class="ai-report-content empty"><strong>아직 생성된 리포트가 없습니다</strong><p>PAT 환경을 연결한 뒤 <code>uv run cluefin-agent daily-report</code>를 실행하면 이곳에 최신 리포트가 표시됩니다.</p></div>
+              <div class="ai-brief-heading">
+                <div><span class="section-kicker">LANGGRAPH DAILY BRIEF</span><h2>AI 일일 분석 리포트</h2><p>거시·한국/미국 주식·코인·패턴·시그널을 같은 스냅샷으로 종합합니다.</p></div>
+                <div class="ai-brief-actions">
+                  <span id="ai-report-status" class="freshness missing">리포트 대기</span>
+                  <input id="ai-report-date" type="date" aria-label="리포트 기준일" />
+                  <button id="ai-report-generate" type="button" class="ai-report-run">리포트 생성</button>
+                </div>
+              </div>
+              <p id="ai-report-job" class="ai-report-job" hidden></p>
+              <div class="ai-report-layout">
+                <aside class="ai-report-history">
+                  <h3>보관된 리포트</h3>
+                  <ul id="ai-report-history-list"><li class="empty">아직 보관된 리포트가 없습니다</li></ul>
+                </aside>
+                <div id="ai-report-content" class="ai-report-content empty"><strong>아직 생성된 리포트가 없습니다</strong><p><code>리포트 생성</code> 버튼을 누르면 지금 적재된 데이터로 리포트를 만듭니다. 터미널에서는 <code>uv run cluefin-agent daily-report</code>도 같은 결과를 만듭니다.</p></div>
+              </div>
             </section>
 
             <section class="pulse-toolbar">
@@ -469,6 +484,107 @@
                   <div id="paper-backtests" class="paper-list"></div>
                 </div>
               </div>
+            </section>
+          </section>
+
+          <section id="estate-panel" class="tab-panel" role="tabpanel" data-panel="estate" hidden>
+            <section class="analysis-intro estate-intro">
+              <div><span class="section-kicker">CAPITAL AREA HOUSING</span><h2>부동산 분석</h2><p>수도권 주택·토지 시계열을 지표(fact)와 축(dimension)을 직접 골라 비교합니다. 아래 템플릿으로 시작한 뒤 조건을 바꿔가며 보세요.</p></div>
+              <div id="estate-coverage" class="estate-coverage">데이터 확인 중</div>
+            </section>
+
+            <section class="panel estate-templates-panel">
+              <div class="panel-header"><div><h2>대표 분석 템플릿</h2><p>부동산 시장을 볼 때 자주 쓰는 질문들입니다. 누르면 아래 조건이 자동으로 채워집니다.</p></div></div>
+              <div id="estate-templates" class="estate-templates"></div>
+            </section>
+
+            <section class="panel estate-builder-panel">
+              <div class="panel-header"><div><h2>직접 만들기</h2><p>지표·축·필터·집계·변환을 조합해 원하는 차트를 만듭니다.</p></div></div>
+              <form id="estate-form" class="estate-form">
+                <div class="estate-field estate-field-wide">
+                  <label>지표 (fact)<small>여러 개를 고르면 지표끼리 비교할 수 있습니다</small></label>
+                  <div id="estate-metrics" class="estate-checks"></div>
+                </div>
+                <div class="estate-field">
+                  <label for="estate-series">시리즈 축 (dimension)</label>
+                  <select id="estate-series" name="series_dimension"></select>
+                </div>
+                <div class="estate-field">
+                  <label for="estate-bucket">기간 단위</label>
+                  <select id="estate-bucket" name="bucket">
+                    <option value="week">주간</option>
+                    <option value="month" selected>월간</option>
+                    <option value="quarter">분기</option>
+                  </select>
+                </div>
+                <div class="estate-field">
+                  <label for="estate-aggregation">집계</label>
+                  <select id="estate-aggregation" name="aggregation">
+                    <option value="avg" selected>평균</option>
+                    <option value="last">마지막 값</option>
+                    <option value="sum">합계</option>
+                    <option value="max">최대</option>
+                    <option value="min">최소</option>
+                  </select>
+                </div>
+                <div class="estate-field">
+                  <label for="estate-transform">변환</label>
+                  <select id="estate-transform" name="transform">
+                    <option value="raw" selected>원값</option>
+                    <option value="change">직전 구간 대비 %</option>
+                    <option value="yoy">전년 동기 대비 %</option>
+                    <option value="rebase">시작 시점 100 기준</option>
+                    <option value="ratio">두 지표 비율 (%)</option>
+                  </select>
+                </div>
+                <div class="estate-field">
+                  <label for="estate-chart-type">차트 형태</label>
+                  <select id="estate-chart-type" name="chart">
+                    <option value="line" selected>선</option>
+                    <option value="bar">막대</option>
+                    <option value="area">영역</option>
+                  </select>
+                </div>
+                <div class="estate-field">
+                  <label for="estate-start">시작일</label>
+                  <input id="estate-start" name="start_date" type="date" />
+                </div>
+                <div class="estate-field">
+                  <label for="estate-end">종료일</label>
+                  <input id="estate-end" name="end_date" type="date" />
+                </div>
+                <div class="estate-field estate-field-wide">
+                  <label>지역 필터<small>비우면 전체</small></label>
+                  <div id="estate-filter-region" class="estate-checks" data-dimension="region"></div>
+                </div>
+                <div class="estate-field">
+                  <label>권역 필터</label>
+                  <div id="estate-filter-region_tier" class="estate-checks" data-dimension="region_tier"></div>
+                </div>
+                <div class="estate-field">
+                  <label>주택유형 필터</label>
+                  <div id="estate-filter-property_type" class="estate-checks" data-dimension="property_type"></div>
+                </div>
+                <div class="estate-field">
+                  <label>거래유형 필터</label>
+                  <div id="estate-filter-deal_type" class="estate-checks" data-dimension="deal_type"></div>
+                </div>
+                <div class="estate-actions">
+                  <button type="submit" class="estate-run">차트 그리기</button>
+                  <button type="button" id="estate-reset" class="ghost-button">조건 초기화</button>
+                </div>
+              </form>
+            </section>
+
+            <section class="panel estate-chart-panel">
+              <div class="panel-header">
+                <div><h2 id="estate-chart-title">차트</h2><p id="estate-chart-caption">템플릿을 고르거나 조건을 만든 뒤 차트를 그려주세요.</p></div>
+                <span id="estate-chart-unit" class="freshness"></span>
+              </div>
+              <p id="estate-chart-message" class="estate-message" hidden></p>
+              <div id="estate-chart" class="estate-chart" aria-label="부동산 시계열 차트"></div>
+              <div id="estate-legend" class="estate-legend"></div>
+              <div class="estate-table-wrap"><table id="estate-table" class="estate-table"></table></div>
             </section>
           </section>
         </div>

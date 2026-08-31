@@ -2,6 +2,11 @@ const state = {
   dashboard: null,
   pulse: null,
   researchReport: null,
+  reportHistory: [],
+  reportJob: null,
+  reportPollTimer: null,
+  selectedReportId: null,
+  estate: { meta: null, result: null, activeTemplate: null, chartType: "line" },
   paper: null,
   activeTab: "pulse",
   pulseFilter: "all",
@@ -47,15 +52,21 @@ const formatNumber = value => new Intl.NumberFormat("en-US").format(Number(value
 const tag = value => `<span class="tag ${value ? "" : "no"}">${value ? "Yes" : "No"}</span>`;
 
 async function loadDashboard() {
-  const [dashboardResponse, pulseResponse, reportResponse] = await Promise.all([
+  const [dashboardResponse, pulseResponse, reportResponse, historyResponse, jobResponse] = await Promise.all([
     fetch("/api/dashboard"),
     fetch("/api/market-pulse"),
     fetch("/api/research-report"),
+    fetch("/api/research-reports"),
+    fetch("/api/research-reports/status"),
   ]);
   state.dashboard = await dashboardResponse.json();
   state.pulse = pulseResponse.ok ? await pulseResponse.json() : null;
   state.researchReport = reportResponse.ok ? await reportResponse.json() : null;
+  state.reportHistory = historyResponse.ok ? await historyResponse.json() : [];
+  state.reportJob = jobResponse.ok ? await jobResponse.json() : null;
+  state.selectedReportId = state.researchReport?.report_id || null;
   render();
+  if (state.reportJob?.status === "running") pollReportJob();
 }
 
 function render() {
@@ -76,6 +87,8 @@ function render() {
   document.querySelector("#as-of").textContent = contextAsOf ? `시장 데이터 ${contextAsOf} 기준` : "수집된 시장 데이터가 없습니다";
   renderMarketPulse(state.pulse);
   renderResearchReport(state.researchReport);
+  renderReportHistory(state.reportHistory);
+  renderReportJob(state.reportJob);
   renderSnapshot(data);
   renderSignals(data.signals || []);
   renderPerformance(data.performance || []);
@@ -92,32 +105,207 @@ function renderResearchReport(report) {
     status.className = "freshness missing";
     status.textContent = "리포트 대기";
     content.className = "ai-report-content empty";
-    content.innerHTML = `<strong>아직 생성된 리포트가 없습니다</strong><p>PAT 환경을 연결한 뒤 <code>uv run cluefin-agent daily-report</code>를 실행하면 이곳에 최신 리포트가 표시됩니다.</p>`;
+    content.innerHTML = `<strong>아직 생성된 리포트가 없습니다</strong><p><code>리포트 생성</code> 버튼을 누르면 지금 적재된 데이터로 리포트를 만듭니다.</p>`;
     return;
   }
   status.className = `freshness ${report.status === "validated" ? "fresh" : "aging"}`;
   status.textContent = `${report.report_date} · ${report.model}`;
   content.className = "ai-report-content";
-  content.innerHTML = `<div class="ai-report-meta"><strong>${escapeHtml(report.title)}</strong><span>${escapeHtml(report.generated_at)} · ${escapeHtml(report.status)}</span></div><div class="ai-report-markdown">${safeMarkdown(report.markdown)}</div>`;
+  content.innerHTML = `<div class="ai-report-meta"><strong>${escapeHtml(report.title)}</strong><span>${escapeHtml(report.generated_at)} · ${escapeHtml(report.status)} · ${escapeHtml(report.model)}</span></div>${renderReportIndicatorStrip(report.markdown)}<div class="ai-report-markdown">${safeMarkdown(report.markdown, { skipLeadingTitle: true })}</div>`;
+}
+
+function reportCitedIndicators(markdown, limit = 8) {
+  const text = String(markdown || "");
+  if (!text) return [];
+  const indicators = (state.pulse?.indicators || []).filter(item => item.value !== null && item.value !== undefined);
+  return indicators
+    .filter(item => item.name_ko && text.includes(item.name_ko))
+    .sort((left, right) => Math.abs(right.impact_score || 0) - Math.abs(left.impact_score || 0))
+    .slice(0, limit);
+}
+
+function renderReportIndicatorStrip(markdown) {
+  const cited = reportCitedIndicators(markdown);
+  if (!cited.length) return "";
+  const cards = cited
+    .map(item => {
+      const tone = item.tone || "neutral";
+      const change = item.change_pct === null || item.change_pct === undefined
+        ? ""
+        : `<span class="ai-report-chip-change ${tone}">${formatPercent(item.change_pct)}</span>`;
+      return `<button type="button" class="ai-report-chip" data-report-indicator="${escapeHtml(item.indicator_id)}" aria-label="${escapeHtml(item.name_ko)} 차트 열기">
+        <span class="ai-report-chip-name">${escapeHtml(item.name_ko)}</span>
+        <span class="ai-report-chip-value">${formatIndicatorValue(item.value, item.unit)}${change}</span>
+        ${sparkline(item.series || [], tone)}
+        <span class="ai-report-chip-verdict ${tone}">${escapeHtml(item.impact_label || "판단 보조")}</span>
+      </button>`;
+    })
+    .join("");
+  return `<section class="ai-report-strip"><h4>리포트가 인용한 지표</h4><div class="ai-report-chips">${cards}</div><p class="ai-report-strip-hint">카드를 누르면 전체 시계열 차트가 열립니다.</p></section>`;
+}
+
+function renderReportHistory(history) {
+  const list = document.querySelector("#ai-report-history-list");
+  if (!list) return;
+  const items = Array.isArray(history) ? history : [];
+  if (!items.length) {
+    list.innerHTML = `<li class="empty">아직 보관된 리포트가 없습니다</li>`;
+    return;
+  }
+  list.innerHTML = items
+    .map(item => {
+      const active = item.report_id === state.selectedReportId ? " active" : "";
+      const generated = String(item.generated_at || "").slice(0, 16);
+      return `<li><button type="button" class="ai-report-history-item${active}" data-report-id="${escapeHtml(item.report_id)}"><strong>${escapeHtml(item.report_date)}</strong><span>${escapeHtml(generated)}</span><small>${escapeHtml(item.model)} · ${escapeHtml(item.status)}</small></button></li>`;
+    })
+    .join("");
+}
+
+function renderReportJob(job) {
+  const banner = document.querySelector("#ai-report-job");
+  const button = document.querySelector("#ai-report-generate");
+  if (!banner || !button) return;
+  const running = job?.status === "running";
+  button.disabled = running;
+  button.textContent = running ? "생성 중..." : "리포트 생성";
+  if (!job || job.status === "idle") {
+    if (job && job.llm && !job.llm.configured) {
+      banner.hidden = false;
+      banner.className = "ai-report-job warn";
+      banner.textContent = `모델 연결이 없습니다. 환경변수 ${job.llm.missing.join(", ")}를 설정하면 생성할 수 있습니다.`;
+      return;
+    }
+    banner.hidden = true;
+    banner.textContent = "";
+    return;
+  }
+  banner.hidden = false;
+  banner.className = `ai-report-job ${job.status === "failed" ? "error" : job.status === "running" ? "info" : "ok"}`;
+  const prefix = job.report_date ? `${job.report_date} · ` : "";
+  banner.textContent = `${prefix}${job.message || job.status}`;
+}
+
+async function generateResearchReport() {
+  const dateInput = document.querySelector("#ai-report-date");
+  const payload = dateInput?.value ? { report_date: dateInput.value } : {};
+  const response = await fetch("/api/research-reports/generate", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+  if (!response.ok) {
+    const detail = await response.json().catch(() => ({}));
+    state.reportJob = {
+      status: "failed",
+      message: detail.detail || "리포트 생성을 시작하지 못했습니다.",
+      llm: state.reportJob?.llm,
+    };
+    renderReportJob(state.reportJob);
+    return;
+  }
+  state.reportJob = await response.json();
+  renderReportJob(state.reportJob);
+  pollReportJob();
+}
+
+function pollReportJob() {
+  if (state.reportPollTimer) return;
+  state.reportPollTimer = window.setInterval(async () => {
+    const response = await fetch("/api/research-reports/status");
+    if (!response.ok) return;
+    const job = await response.json();
+    state.reportJob = job;
+    renderReportJob(job);
+    if (job.status === "running") return;
+    window.clearInterval(state.reportPollTimer);
+    state.reportPollTimer = null;
+    if (job.status === "succeeded") await refreshResearchReports();
+  }, 2500);
+}
+
+async function refreshResearchReports() {
+  const [reportResponse, historyResponse] = await Promise.all([
+    fetch("/api/research-report"),
+    fetch("/api/research-reports"),
+  ]);
+  state.researchReport = reportResponse.ok ? await reportResponse.json() : null;
+  state.reportHistory = historyResponse.ok ? await historyResponse.json() : [];
+  state.selectedReportId = state.researchReport?.report_id || null;
+  renderResearchReport(state.researchReport);
+  renderReportHistory(state.reportHistory);
+}
+
+async function openStoredReport(reportId) {
+  const response = await fetch(`/api/research-reports/${encodeURIComponent(reportId)}`);
+  if (!response.ok) return;
+  state.researchReport = await response.json();
+  state.selectedReportId = reportId;
+  renderResearchReport(state.researchReport);
+  renderReportHistory(state.reportHistory);
 }
 
 function escapeHtml(value) {
   return String(value ?? "").replace(/[&<>'"]/g, character => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", "'": "&#39;", '"': "&quot;" })[character]);
 }
 
-function safeMarkdown(markdown) {
+function inlineMarkdown(escaped) {
+  return escaped
+    .replace(/`([^`]+)`/g, "<code>$1</code>")
+    .replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>");
+}
+
+function isTableSeparator(line) {
+  return /^\|?[\s:-]*-[-\s|:]*\|?$/.test(line) && line.includes("-");
+}
+
+function tableCells(line) {
+  return line.replace(/^\|/, "").replace(/\|$/, "").split("|").map(cell => cell.trim());
+}
+
+function safeMarkdown(markdown, { skipLeadingTitle = false } = {}) {
   const lines = String(markdown || "").split(/\r?\n/);
   let listOpen = false;
+  let titleSkipped = !skipLeadingTitle;
   const html = [];
+  let index = -1;
+  let skipUntil = 0;
   lines.forEach(line => {
-    const value = escapeHtml(line.trim());
-    if (value.startsWith("## ")) {
+    index += 1;
+    if (index < skipUntil) return;
+    const value = inlineMarkdown(escapeHtml(line.trim()));
+    const plain = escapeHtml(line.trim());
+    if (plain.startsWith("|") && isTableSeparator(String(lines[index + 1] || "").trim())) {
+      if (listOpen) { html.push("</ul>"); listOpen = false; }
+      const header = tableCells(line.trim());
+      const body = [];
+      let cursor = index + 2;
+      while (cursor < lines.length && lines[cursor].trim().startsWith("|")) {
+        body.push(tableCells(lines[cursor].trim()));
+        cursor += 1;
+      }
+      skipUntil = cursor;
+      const head = header.map(cell => `<th>${inlineMarkdown(escapeHtml(cell))}</th>`).join("");
+      const rows = body
+        .map(cells => `<tr>${cells.map(cell => `<td>${inlineMarkdown(escapeHtml(cell))}</td>`).join("")}</tr>`)
+        .join("");
+      html.push(`<table class="ai-report-table"><thead><tr>${head}</tr></thead><tbody>${rows}</tbody></table>`);
+      return;
+    }
+    if (plain.startsWith("#### ")) {
+      if (listOpen) { html.push("</ul>"); listOpen = false; }
+      html.push(`<h4>${value.slice(5)}</h4>`);
+    } else if (plain.startsWith("### ")) {
+      if (listOpen) { html.push("</ul>"); listOpen = false; }
+      html.push(`<h4>${value.slice(4)}</h4>`);
+    } else if (plain.startsWith("## ")) {
       if (listOpen) { html.push("</ul>"); listOpen = false; }
       html.push(`<h3>${value.slice(3)}</h3>`);
-    } else if (value.startsWith("# ")) {
+    } else if (plain.startsWith("# ")) {
       if (listOpen) { html.push("</ul>"); listOpen = false; }
+      // The report title already sits in the card header, so the first H1 would read twice.
+      if (!titleSkipped) { titleSkipped = true; return; }
       html.push(`<h2>${value.slice(2)}</h2>`);
-    } else if (value.startsWith("- ")) {
+    } else if (plain.startsWith("- ")) {
       if (!listOpen) { html.push("<ul>"); listOpen = true; }
       html.push(`<li>${value.slice(2)}</li>`);
     } else if (value) {
@@ -226,6 +414,20 @@ function renderDriverCard(item) {
   </article>`;
 }
 
+const CRYPTO_ASSET_LABELS = { btc: "비트코인", eth: "이더리움", xrp: "리플" };
+
+// MVRV, 실현가격, NUPL, 펀딩비 같은 개념 설명은 자산만 다르므로 비트코인 설명을 재사용한다.
+function cryptoConceptFallback(map, indicatorId) {
+  const match = /^(eth|xrp)_(.+)$/.exec(indicatorId || "");
+  if (!match) return null;
+  const [, asset, concept] = match;
+  const base = map[`btc_${concept}`] || map[`crypto_${concept}`];
+  if (!base) return null;
+  const label = CRYPTO_ASSET_LABELS[asset];
+  const swap = value => String(value).split("비트코인").join(label);
+  return typeof base === "string" ? swap(base) : { example: swap(base.example), caveat: swap(base.caveat) };
+}
+
 function indicatorLearningGuide(item) {
   const specific = {
     usd_krw: { example: "원·달러가 1,450원에서 1,380원으로 내려오면 외국인 입장에서 환차손 우려가 줄고 한국 주식 수급에 우호적일 수 있습니다.", caveat: "수출기업은 원화 약세에서 이익을 볼 수 있어 업종별 영향은 반대일 수 있습니다." },
@@ -246,6 +448,8 @@ function indicatorLearningGuide(item) {
     us_high_yield_oas: { example: "하이일드 OAS가 3%p에서 6%p로 뛰면 저신용 기업이 국채보다 훨씬 높은 이자를 내야 해 부도와 경기침체 우려가 커졌다는 뜻입니다.", caveat: "이미 공포가 극단인 시점에는 스프레드 축소가 주가보다 늦게 나타날 수 있습니다." },
   };
   if (specific[item.indicator_id]) return { what: indicatorWhat(item), ...specific[item.indicator_id] };
+  const shared = cryptoConceptFallback(specific, item.indicator_id);
+  if (shared) return { what: indicatorWhat(item), ...shared };
   const category = {
     rates: { example: "금리가 하락하면 같은 기업이익에도 적용되는 할인율이 낮아져 주식의 적정가치가 높아질 수 있습니다.", caveat: "경기침체 때문에 금리가 내려가는 경우에는 실적 악화가 금리 효과를 상쇄할 수 있습니다." },
     inflation: { example: "물가가 예상보다 높으면 중앙은행의 금리 인하가 늦어져 성장주와 고위험 자산이 압박받을 수 있습니다.", caveat: "발표값보다 시장 예상과의 차이와 최근 3개월 추세가 더 중요합니다." },
@@ -283,6 +487,8 @@ function indicatorWhat(item) {
     us_real_yield_10y: "미국 10년 국채금리에서 시장의 기대인플레이션을 제거한 실질 수익률입니다. 물가를 제외하고도 얻을 수 있는 무위험 보상에 가깝습니다.",
   };
   if (specific[item.indicator_id]) return specific[item.indicator_id];
+  const shared = cryptoConceptFallback(specific, item.indicator_id);
+  if (shared) return shared;
   const byCategory = {
     rates: "돈을 빌리거나 미래 현금흐름을 현재 가치로 바꿀 때 적용되는 금리 관련 지표입니다.",
     liquidity: "금융시스템 안에서 투자·대출·결제에 사용할 수 있는 현금과 준비금의 규모를 보여주는 지표입니다.",
@@ -551,6 +757,12 @@ function setActiveTab(tabName) {
   if (sidebarFilters) sidebarFilters.hidden = tabName !== "signals";
   if (tabName === "paper") {
     loadPaperDashboard();
+  }
+  if (tabName === "estate") {
+    // 부동산 데이터는 탭을 열었을 때만 불러 초기 로딩을 가볍게 유지한다.
+    loadEstate().then(() => {
+      if (state.estate.result) renderEstateChart();
+    });
   }
 }
 
@@ -2030,7 +2242,363 @@ document.querySelector("#paper-refresh")?.addEventListener("click", loadPaperDas
 document.querySelector("#paper-account-form")?.addEventListener("submit", createPaperAccount);
 document.querySelector("#paper-strategy-form")?.addEventListener("submit", createPaperStrategy);
 document.querySelector("#paper-backtest-form")?.addEventListener("submit", runPaperBacktest);
+const reportDateInput = document.querySelector("#ai-report-date");
+if (reportDateInput && !reportDateInput.value) {
+  const now = new Date();
+  reportDateInput.value = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-${String(now.getDate()).padStart(2, "0")}`;
+}
+document.querySelector("#ai-report-generate")?.addEventListener("click", generateResearchReport);
+document.querySelector("#ai-report-history-list")?.addEventListener("click", event => {
+  const button = event.target.closest("[data-report-id]");
+  if (button) openStoredReport(button.dataset.reportId);
+});
+document.querySelector("#ai-report-content")?.addEventListener("click", event => {
+  const button = event.target.closest("[data-report-indicator]");
+  if (button) openIndicatorChart(button.dataset.reportIndicator);
+});
 
 initializeSortableTables();
 initializeChartInteractions();
 loadDashboard();
+
+const ESTATE_SERIES_COLORS = ["#2e8b6b", "#c2694a", "#3f6f9e", "#a88d49", "#7a5aa5", "#4f8f8b", "#b45f8a", "#6b7f3f"];
+const ESTATE_DIMENSION_LABELS = { metric_id: "지표", region: "지역", region_tier: "권역", property_type: "주택유형", deal_type: "거래유형" };
+const ESTATE_FILTER_DIMENSIONS = ["region", "region_tier", "property_type", "deal_type"];
+
+async function loadEstate() {
+  if (state.estate.meta) return;
+  const response = await fetch("/api/real-estate/meta");
+  if (!response.ok) return;
+  state.estate.meta = await response.json();
+  renderEstateMeta();
+  const first = state.estate.meta.templates?.[0];
+  if (first) applyEstateTemplate(first.id);
+}
+
+function estateMetricName(metricId) {
+  const found = (state.estate.meta?.metrics || []).find(item => item.metric_id === metricId);
+  return found ? found.name_ko : metricId;
+}
+
+function renderEstateMeta() {
+  const meta = state.estate.meta;
+  if (!meta) return;
+  const coverage = meta.coverage || {};
+  const summary = document.querySelector("#estate-coverage");
+  if (summary) {
+    summary.textContent = coverage.observations
+      ? `관측 ${formatNumber(coverage.observations)}건 · 지표 ${coverage.metrics}개 · 지역 ${coverage.regions}개 · ${coverage.first_period} ~ ${coverage.last_period}`
+      : "적재된 부동산 데이터가 없습니다. cluefin-store update-real-estate를 실행해 주세요.";
+  }
+
+  const templates = document.querySelector("#estate-templates");
+  if (templates) {
+    templates.innerHTML = (meta.templates || [])
+      .map(item => `<button type="button" class="estate-template" data-template="${escapeHtml(item.id)}">
+        <strong>${escapeHtml(item.name)}</strong>
+        <span>${escapeHtml(item.question)}</span>
+        <small>${escapeHtml(item.metric_ids.map(estateMetricName).join(" · "))}</small>
+      </button>`)
+      .join("");
+  }
+
+  const metrics = document.querySelector("#estate-metrics");
+  if (metrics) {
+    metrics.innerHTML = (meta.metrics || [])
+      .map(item => `<label class="estate-check" title="${escapeHtml(item.description_ko || "")}">
+        <input type="checkbox" name="metric" value="${escapeHtml(item.metric_id)}" />
+        <span>${escapeHtml(item.name_ko)}</span><small>${escapeHtml(item.unit)}</small>
+      </label>`)
+      .join("");
+  }
+
+  const seriesSelect = document.querySelector("#estate-series");
+  if (seriesSelect) {
+    seriesSelect.innerHTML = Object.entries(ESTATE_DIMENSION_LABELS)
+      .map(([value, label]) => `<option value="${value}"${value === "region" ? " selected" : ""}>${label}</option>`)
+      .join("");
+  }
+
+  Object.entries(meta.dimensions || {}).forEach(([dimension, values]) => {
+    const host = document.querySelector(`#estate-filter-${dimension}`);
+    if (!host) return;
+    host.innerHTML = values
+      .map(value => `<label class="estate-check"><input type="checkbox" name="${dimension}" value="${escapeHtml(value)}" /><span>${escapeHtml(value)}</span></label>`)
+      .join("");
+  });
+}
+
+function applyEstateTemplate(templateId) {
+  const template = (state.estate.meta?.templates || []).find(item => item.id === templateId);
+  if (!template) return;
+  state.estate.activeTemplate = templateId;
+  document.querySelectorAll("[data-template]").forEach(button => {
+    button.classList.toggle("active", button.dataset.template === templateId);
+  });
+  document.querySelectorAll('#estate-metrics input[name="metric"]').forEach(input => {
+    input.checked = template.metric_ids.includes(input.value);
+  });
+  ESTATE_FILTER_DIMENSIONS.forEach(dimension => {
+    const wanted = (template.filters || {})[dimension] || [];
+    document.querySelectorAll(`#estate-filter-${dimension} input`).forEach(input => {
+      input.checked = wanted.includes(input.value);
+    });
+  });
+  setEstateValue("#estate-series", template.series_dimension || "region");
+  setEstateValue("#estate-transform", template.transform || "raw");
+  setEstateValue("#estate-aggregation", template.aggregation || "avg");
+  setEstateValue("#estate-chart-type", template.chart || "line");
+  setEstateValue("#estate-bucket", template.bucket || "month");
+  runEstateQuery(template.name, template.question);
+}
+
+function setEstateValue(selector, value) {
+  const element = document.querySelector(selector);
+  if (element) element.value = value;
+}
+
+function collectEstatePayload() {
+  const metricIds = [...document.querySelectorAll('#estate-metrics input[name="metric"]:checked')].map(input => input.value);
+  const filters = {};
+  ESTATE_FILTER_DIMENSIONS.forEach(dimension => {
+    const values = [...document.querySelectorAll(`#estate-filter-${dimension} input:checked`)].map(input => input.value);
+    if (values.length) filters[dimension] = values;
+  });
+  const startDate = document.querySelector("#estate-start")?.value;
+  const endDate = document.querySelector("#estate-end")?.value;
+  return {
+    metric_ids: metricIds,
+    series_dimension: document.querySelector("#estate-series")?.value || "region",
+    bucket: document.querySelector("#estate-bucket")?.value || "month",
+    aggregation: document.querySelector("#estate-aggregation")?.value || "avg",
+    transform: document.querySelector("#estate-transform")?.value || "raw",
+    filters,
+    start_date: startDate || null,
+    end_date: endDate || null,
+  };
+}
+
+async function runEstateQuery(title, caption) {
+  const payload = collectEstatePayload();
+  const message = document.querySelector("#estate-chart-message");
+  if (!payload.metric_ids.length) {
+    showEstateMessage("지표를 최소 1개 선택해 주세요.");
+    return;
+  }
+  const response = await fetch("/api/real-estate/query", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+  if (!response.ok) {
+    const detail = await response.json().catch(() => ({}));
+    showEstateMessage(detail.detail || "차트를 만들지 못했습니다.");
+    return;
+  }
+  if (message) message.hidden = true;
+  state.estate.result = await response.json();
+  state.estate.chartType = document.querySelector("#estate-chart-type")?.value || "line";
+  const heading = document.querySelector("#estate-chart-title");
+  const captionNode = document.querySelector("#estate-chart-caption");
+  if (heading) heading.textContent = title || payload.metric_ids.map(estateMetricName).join(" · ");
+  if (captionNode) {
+    const dimensionLabel = ESTATE_DIMENSION_LABELS[payload.series_dimension] || payload.series_dimension;
+    captionNode.textContent = caption
+      ? caption
+      : `${dimensionLabel}별 ${state.estate.result.transform_label} · ${bucketLabel(payload.bucket)} 집계`;
+  }
+  const unit = document.querySelector("#estate-chart-unit");
+  if (unit) unit.textContent = state.estate.result.unit || "";
+  renderEstateChart();
+  renderEstateTable();
+}
+
+function bucketLabel(bucket) {
+  return { week: "주간", month: "월간", quarter: "분기" }[bucket] || bucket;
+}
+
+function showEstateMessage(text) {
+  const message = document.querySelector("#estate-chart-message");
+  if (!message) return;
+  message.hidden = false;
+  message.textContent = text;
+}
+
+function estateSeriesLabel(name) {
+  return state.estate.result?.series_dimension === "metric_id" ? estateMetricName(name) : name;
+}
+
+function renderEstateChart() {
+  const host = document.querySelector("#estate-chart");
+  const result = state.estate.result;
+  if (!host || !result) return;
+  host.innerHTML = `<canvas id="estate-canvas"></canvas>`;
+  const canvas = document.querySelector("#estate-canvas");
+  const cssWidth = canvas.clientWidth || host.clientWidth || 900;
+  const cssHeight = canvas.clientHeight || 360;
+  const ratio = window.devicePixelRatio || 1;
+  canvas.width = Math.round(cssWidth * ratio);
+  canvas.height = Math.round(cssHeight * ratio);
+  const context = canvas.getContext("2d");
+  context.setTransform(ratio, 0, 0, ratio, 0, 0);
+  context.clearRect(0, 0, cssWidth, cssHeight);
+  context.fillStyle = "#ffffff";
+  context.fillRect(0, 0, cssWidth, cssHeight);
+
+  const buckets = result.buckets || [];
+  const series = result.series || [];
+  if (!buckets.length || !series.length) {
+    context.fillStyle = "#75857f";
+    context.font = "15px sans-serif";
+    context.fillText("조건에 맞는 데이터가 없습니다", 24, 44);
+    renderEstateLegend([]);
+    return;
+  }
+
+  const values = series.flatMap(item => item.points).filter(value => value !== null && value !== undefined).map(Number);
+  const rawMin = Math.min(...values), rawMax = Math.max(...values);
+  const includeZero = state.estate.chartType === "bar" || rawMin > 0 && rawMin < rawMax * 0.2;
+  const lowBase = includeZero ? Math.min(0, rawMin) : rawMin;
+  const pad = Math.max((rawMax - lowBase) * 0.08, Math.abs(rawMax || 1) * 0.004);
+  const min = lowBase - (includeZero ? 0 : pad), max = rawMax + pad, span = max - min || 1;
+  const box = { left: 16, top: 18, right: cssWidth - 96, bottom: cssHeight - 40 };
+  const xFor = index => box.left + (index / Math.max(buckets.length - 1, 1)) * (box.right - box.left);
+  const yFor = value => box.top + (1 - (value - min) / span) * (box.bottom - box.top);
+
+  context.lineWidth = 1;
+  context.strokeStyle = "#e6ebe8";
+  context.fillStyle = "#5d6f68";
+  context.font = "12px ui-monospace, SFMono-Regular, Menlo, monospace";
+  for (let index = 0; index <= 5; index += 1) {
+    const y = box.top + (index / 5) * (box.bottom - box.top);
+    const value = max - (index / 5) * span;
+    context.beginPath(); context.moveTo(box.left, y); context.lineTo(box.right, y); context.stroke();
+    context.fillText(estateAxisValue(value), box.right + 10, y + 4);
+  }
+  const labelStep = Math.max(1, Math.ceil(buckets.length / 8));
+  buckets.forEach((bucket, index) => {
+    if (index % labelStep && index !== buckets.length - 1) return;
+    const x = xFor(index);
+    context.strokeStyle = "#f0f4f2";
+    context.beginPath(); context.moveTo(x, box.top); context.lineTo(x, box.bottom); context.stroke();
+    context.fillStyle = "#5d6f68";
+    context.fillText(bucket.slice(2, 7), Math.min(x - 17, box.right - 32), box.bottom + 20);
+  });
+
+  const chartType = state.estate.chartType;
+  series.forEach((item, seriesIndex) => {
+    const color = ESTATE_SERIES_COLORS[seriesIndex % ESTATE_SERIES_COLORS.length];
+    if (chartType === "bar") {
+      const groupWidth = (box.right - box.left) / Math.max(buckets.length, 1);
+      const barWidth = Math.max(2, (groupWidth * 0.7) / series.length);
+      item.points.forEach((point, index) => {
+        if (point === null || point === undefined) return;
+        const x = xFor(index) - (groupWidth * 0.35) + seriesIndex * barWidth;
+        const zeroY = yFor(Math.max(min, Math.min(0, max)));
+        const y = yFor(Number(point));
+        context.fillStyle = color;
+        context.fillRect(x, Math.min(y, zeroY), barWidth - 1, Math.max(1, Math.abs(zeroY - y)));
+      });
+      return;
+    }
+    if (chartType === "area") {
+      context.beginPath();
+      let started = false;
+      item.points.forEach((point, index) => {
+        if (point === null || point === undefined) return;
+        const x = xFor(index), y = yFor(Number(point));
+        if (!started) { context.moveTo(x, y); started = true; } else context.lineTo(x, y);
+      });
+      const lastIndex = item.points.map((p, i) => (p === null || p === undefined ? -1 : i)).filter(i => i >= 0).pop();
+      const firstIndex = item.points.findIndex(p => p !== null && p !== undefined);
+      if (started && lastIndex !== undefined) {
+        context.lineTo(xFor(lastIndex), box.bottom);
+        context.lineTo(xFor(firstIndex), box.bottom);
+        context.closePath();
+        context.fillStyle = `${color}22`;
+        context.fill();
+      }
+    }
+    context.beginPath();
+    let started = false;
+    item.points.forEach((point, index) => {
+      if (point === null || point === undefined) return;
+      const x = xFor(index), y = yFor(Number(point));
+      if (!started) { context.moveTo(x, y); started = true; } else context.lineTo(x, y);
+    });
+    context.strokeStyle = color;
+    context.lineWidth = 1.8;
+    context.stroke();
+  });
+
+  renderEstateLegend(series);
+}
+
+function estateAxisValue(value) {
+  const unit = state.estate.result?.unit || "";
+  if (unit === "%") return `${value.toFixed(2)}%`;
+  if (Math.abs(value) >= 1000) return new Intl.NumberFormat("en-US", { maximumFractionDigits: 0 }).format(value);
+  return new Intl.NumberFormat("en-US", { minimumFractionDigits: 1, maximumFractionDigits: 2 }).format(value);
+}
+
+function renderEstateLegend(series) {
+  const legend = document.querySelector("#estate-legend");
+  if (!legend) return;
+  legend.innerHTML = series
+    .map((item, index) => {
+      const color = ESTATE_SERIES_COLORS[index % ESTATE_SERIES_COLORS.length];
+      const last = [...item.points].reverse().find(point => point !== null && point !== undefined);
+      return `<span class="estate-legend-item"><i style="background:${color}"></i>${escapeHtml(estateSeriesLabel(item.name))}<em>${last === undefined ? "-" : estateAxisValue(Number(last))}</em></span>`;
+    })
+    .join("");
+}
+
+function renderEstateTable() {
+  const table = document.querySelector("#estate-table");
+  const result = state.estate.result;
+  if (!table || !result) return;
+  const buckets = result.buckets || [];
+  const series = result.series || [];
+  if (!buckets.length || !series.length) {
+    table.innerHTML = "";
+    return;
+  }
+  const tail = buckets.slice(-12);
+  const offset = buckets.length - tail.length;
+  const head = `<thead><tr><th>${ESTATE_DIMENSION_LABELS[result.series_dimension] || "시리즈"}</th>${tail.map(bucket => `<th>${bucket.slice(2, 7)}</th>`).join("")}</tr></thead>`;
+  const body = series
+    .map(item => {
+      const cells = tail
+        .map((_, index) => {
+          const point = item.points[offset + index];
+          return `<td>${point === null || point === undefined ? "-" : estateAxisValue(Number(point))}</td>`;
+        })
+        .join("");
+      return `<tr><td>${escapeHtml(estateSeriesLabel(item.name))}</td>${cells}</tr>`;
+    })
+    .join("");
+  table.innerHTML = `${head}<tbody>${body}</tbody>`;
+}
+
+document.querySelector("#estate-templates")?.addEventListener("click", event => {
+  const button = event.target.closest("[data-template]");
+  if (button) applyEstateTemplate(button.dataset.template);
+});
+document.querySelector("#estate-form")?.addEventListener("submit", event => {
+  event.preventDefault();
+  state.estate.activeTemplate = null;
+  document.querySelectorAll("[data-template]").forEach(button => button.classList.remove("active"));
+  runEstateQuery();
+});
+document.querySelector("#estate-reset")?.addEventListener("click", () => {
+  document.querySelectorAll("#estate-form input[type=checkbox]").forEach(input => { input.checked = false; });
+  ["#estate-start", "#estate-end"].forEach(selector => setEstateValue(selector, ""));
+  setEstateValue("#estate-series", "region");
+  setEstateValue("#estate-bucket", "month");
+  setEstateValue("#estate-aggregation", "avg");
+  setEstateValue("#estate-transform", "raw");
+  setEstateValue("#estate-chart-type", "line");
+});
+window.addEventListener("resize", () => {
+  if (state.activeTab === "estate" && state.estate.result) renderEstateChart();
+});

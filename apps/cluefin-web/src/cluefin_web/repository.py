@@ -120,6 +120,56 @@ class DashboardRepository:
         )
         return rows[0] if rows else None
 
+    def research_report_history(self, limit: int = 30) -> list[dict]:
+        """Every stored report, newest first. Markdown is omitted to keep the list light."""
+        return self._query_rows(
+            f"""
+            SELECT toString(report_date) AS report_date, toString(report_id) AS report_id,
+                   model, status, title, prompt_version,
+                   toString(generated_at) AS generated_at,
+                   length(markdown) AS markdown_chars
+            FROM market.daily_research_reports FINAL
+            ORDER BY report_date DESC, generated_at DESC
+            LIMIT {max(1, min(int(limit), 200))}
+            """,
+            fallback_columns=[
+                "report_date",
+                "report_id",
+                "model",
+                "status",
+                "title",
+                "prompt_version",
+                "generated_at",
+                "markdown_chars",
+            ],
+        )
+
+    def research_report(self, report_id: str) -> dict | None:
+        rows = self._query_rows(
+            """
+            SELECT toString(report_date) AS report_date, toString(report_id) AS report_id,
+                   model, status, title, markdown, summary_json, prompt_version,
+                   toString(generated_at) AS generated_at
+            FROM market.daily_research_reports FINAL
+            WHERE report_id = %(report_id)s
+            ORDER BY generated_at DESC
+            LIMIT 1
+            """,
+            fallback_columns=[
+                "report_date",
+                "report_id",
+                "model",
+                "status",
+                "title",
+                "markdown",
+                "summary_json",
+                "prompt_version",
+                "generated_at",
+            ],
+            parameters={"report_id": report_id},
+        )
+        return rows[0] if rows else None
+
     def market_overview(self) -> dict:
         rows = self._query_rows(
             """
@@ -449,6 +499,102 @@ class DashboardRepository:
             "pattern_candidates": _detect_chart_candidates(candles),
             "sentiment_items": sentiment_items,
         }
+
+    def real_estate_meta(self) -> dict:
+        """분석 화면이 dimension·fact 선택지를 구성할 수 있도록 카탈로그와 실제 값 목록을 함께 준다."""
+        metrics = self._query_rows(
+            """
+            SELECT metric_id, name_ko, category, deal_type, unit, frequency,
+                   description_ko, interpretation_ko, source_url
+            FROM market.real_estate_metrics FINAL
+            ORDER BY category, metric_id
+            """,
+            fallback_columns=[
+                "metric_id",
+                "name_ko",
+                "category",
+                "deal_type",
+                "unit",
+                "frequency",
+                "description_ko",
+                "interpretation_ko",
+                "source_url",
+            ],
+        )
+        combos = self._query_rows(
+            """
+            SELECT metric_id, region, region_tier, property_type, deal_type, count() AS points,
+                   toString(min(period)) AS first_period, toString(max(period)) AS last_period
+            FROM market.real_estate_observations FINAL
+            GROUP BY metric_id, region, region_tier, property_type, deal_type
+            ORDER BY metric_id, region, property_type
+            """,
+            fallback_columns=[
+                "metric_id",
+                "region",
+                "region_tier",
+                "property_type",
+                "deal_type",
+                "points",
+                "first_period",
+                "last_period",
+            ],
+        )
+        coverage = self._query_rows(
+            """
+            SELECT count() AS observations, countDistinct(metric_id) AS metrics,
+                   countDistinct(region) AS regions,
+                   toString(min(period)) AS first_period, toString(max(period)) AS last_period
+            FROM market.real_estate_observations FINAL
+            """,
+            fallback_columns=["observations", "metrics", "regions", "first_period", "last_period"],
+        )
+        return {
+            "metrics": metrics,
+            "combinations": combos,
+            "dimensions": _real_estate_dimension_options(combos),
+            "coverage": coverage[0] if coverage else {"observations": 0, "metrics": 0, "regions": 0},
+            "templates": REAL_ESTATE_TEMPLATES,
+        }
+
+    def real_estate_query(self, payload: dict) -> dict:
+        """사용자가 고른 fact·dimension·필터로 시계열을 만든다."""
+        request = _real_estate_request(payload)
+        filters: list[str] = []
+        parameters: dict[str, Any] = {}
+        for index, (column, values) in enumerate(request["filters"].items()):
+            if not values:
+                continue
+            key = f"f{index}"
+            filters.append(f"{column} IN %({key})s")
+            parameters[key] = values
+        if request["start_date"]:
+            filters.append("period >= %(start_date)s")
+            parameters["start_date"] = request["start_date"]
+        if request["end_date"]:
+            filters.append("period <= %(end_date)s")
+            parameters["end_date"] = request["end_date"]
+
+        bucket = REAL_ESTATE_BUCKETS[request["bucket"]]
+        series_column = request["series_dimension"]
+        # 비율 모드는 분자·분모를 나누어야 하므로 지표를 결과에 함께 남긴다.
+        ratio_mode = request["transform"] == "ratio"
+        extra_select = ", metric_id" if ratio_mode and series_column != "metric_id" else ""
+        rows = self._query_rows(
+            f"""
+            SELECT toString({bucket}) AS bucket,
+                   {series_column} AS series,
+                   {REAL_ESTATE_AGGREGATIONS[request["aggregation"]]}(value) AS value,
+                   any(unit) AS unit{extra_select}
+            FROM market.real_estate_observations FINAL
+            WHERE {" AND ".join(filters)}
+            GROUP BY bucket, series{extra_select}
+            ORDER BY bucket, series
+            """,
+            fallback_columns=["bucket", "series", "value", "unit"] + (["metric_id"] if extra_select else []),
+            parameters=parameters,
+        )
+        return _real_estate_result(rows, request)
 
     def paper_dashboard(self) -> dict:
         return {
@@ -816,10 +962,10 @@ class DashboardRepository:
         with self._query_lock:
             return ClickHouseStore(client=self.client).insert_records(table, records)
 
-    def _query_rows(self, sql: str, *, fallback_columns: list[str]) -> list[dict]:
+    def _query_rows(self, sql: str, *, fallback_columns: list[str], parameters: dict | None = None) -> list[dict]:
         try:
             with self._query_lock:
-                result = self.client.query(sql)
+                result = self.client.query(sql, parameters=parameters) if parameters else self.client.query(sql)
         except Exception:
             return []
         columns = getattr(result, "column_names", None) or fallback_columns
@@ -1264,3 +1410,301 @@ def _dedupe_chart_patterns(patterns: list[dict], limit: int = 12) -> list[dict]:
         if len(deduped) >= limit:
             break
     return deduped
+
+
+REAL_ESTATE_BUCKETS = {
+    "week": "toMonday(period)",
+    "month": "toStartOfMonth(period)",
+    "quarter": "toStartOfQuarter(period)",
+}
+REAL_ESTATE_AGGREGATIONS = {"avg": "avg", "sum": "sum", "max": "max", "min": "min", "last": "anyLast"}
+REAL_ESTATE_DIMENSIONS = {
+    "metric_id": "지표",
+    "region": "지역",
+    "region_tier": "권역",
+    "property_type": "주택유형",
+    "deal_type": "거래유형",
+}
+REAL_ESTATE_TRANSFORMS = {
+    "raw": "원값",
+    "change": "직전 구간 대비 %",
+    "yoy": "전년 동기 대비 %",
+    "rebase": "시작 시점 100 기준",
+    "ratio": "두 지표 비율 (%)",
+}
+REAL_ESTATE_TEMPLATES = [
+    {
+        "id": "capital_sale_index",
+        "name": "수도권 아파트 매매가격지수",
+        "question": "서울·경기·인천 아파트값이 어느 방향으로 가고 있나?",
+        "metric_ids": ["house_sale_price_index"],
+        "series_dimension": "region",
+        "filters": {"region": ["서울", "경기", "인천", "수도권"], "property_type": ["아파트"]},
+        "transform": "raw",
+        "chart": "line",
+    },
+    {
+        "id": "capital_sale_yoy",
+        "name": "수도권 매매지수 전년 대비 변화율",
+        "question": "상승·하락 속도가 지역별로 얼마나 벌어졌나?",
+        "metric_ids": ["house_sale_price_index"],
+        "series_dimension": "region",
+        "filters": {"region": ["서울", "경기", "인천", "지방"], "property_type": ["아파트"]},
+        "transform": "yoy",
+        "chart": "bar",
+    },
+    {
+        "id": "seoul_property_types",
+        "name": "서울 주택유형별 매매지수",
+        "question": "아파트·연립·단독 중 무엇이 시장을 끌고 있나?",
+        "metric_ids": ["house_sale_price_index"],
+        "series_dimension": "property_type",
+        "filters": {"region": ["서울"], "property_type": ["아파트", "연립다세대", "단독주택"]},
+        "transform": "rebase",
+        "chart": "line",
+    },
+    {
+        "id": "seoul_deal_types",
+        "name": "서울 매매·전세·월세 지수 비교",
+        "question": "매매와 임대차 가격이 같은 방향인가?",
+        "metric_ids": ["house_sale_price_index", "house_jeonse_price_index", "house_monthly_rent_index"],
+        "series_dimension": "metric_id",
+        "filters": {"region": ["서울"], "property_type": ["아파트"]},
+        "transform": "rebase",
+        "chart": "line",
+    },
+    {
+        "id": "jeonse_ratio_proxy",
+        "name": "전세/매매 지수 비율 (전세가율 대용)",
+        "question": "전세가 매매를 따라잡고 있나, 벌어지고 있나?",
+        "metric_ids": ["house_jeonse_price_index", "house_sale_price_index"],
+        "series_dimension": "region",
+        "filters": {"region": ["서울", "경기", "인천"], "property_type": ["아파트"]},
+        "transform": "ratio",
+        "chart": "line",
+    },
+    {
+        "id": "survey_vs_real_deal",
+        "name": "조사지수 vs 실거래지수 (서울)",
+        "question": "조사 기반 지수와 실제 계약가격이 어긋나고 있나?",
+        "metric_ids": ["house_sale_price_index", "apartment_real_transaction_index"],
+        "series_dimension": "metric_id",
+        "filters": {"region": ["서울"]},
+        "transform": "rebase",
+        "chart": "line",
+    },
+    {
+        "id": "seoul_subregions",
+        "name": "서울 5개 권역 실거래지수",
+        "question": "서울 안에서 어느 권역이 먼저 움직이나?",
+        "metric_ids": ["apartment_real_transaction_index"],
+        "series_dimension": "region",
+        "filters": {"region_tier": ["서울권역"]},
+        "transform": "rebase",
+        "chart": "line",
+    },
+    {
+        "id": "long_run_cycle",
+        "name": "10년 장기 사이클 (재지수화)",
+        "question": "지금 구간은 지난 10년 사이클 중 어디쯤인가?",
+        "metric_ids": ["house_sale_price_index_long"],
+        "series_dimension": "region",
+        "filters": {"region": ["서울", "경기", "인천", "지방"], "property_type": ["아파트"]},
+        "transform": "rebase",
+        "chart": "line",
+    },
+    {
+        "id": "long_run_jeonse_gap",
+        "name": "10년 매매·전세 장기 비교 (서울)",
+        "question": "장기적으로 전세가 매매를 따라왔나?",
+        "metric_ids": ["house_sale_price_index_long", "house_jeonse_price_index_long"],
+        "series_dimension": "metric_id",
+        "filters": {"region": ["서울"], "property_type": ["아파트"]},
+        "transform": "rebase",
+        "chart": "line",
+    },
+    {
+        "id": "capital_vs_local",
+        "name": "수도권 vs 지방 매매지수",
+        "question": "수도권 쏠림이 심해지고 있나?",
+        "metric_ids": ["house_sale_price_index"],
+        "series_dimension": "region",
+        "filters": {"region": ["수도권", "지방", "전국"], "property_type": ["종합"]},
+        "transform": "rebase",
+        "chart": "line",
+    },
+    {
+        "id": "unsold_inventory",
+        "name": "미분양 재고 추이",
+        "question": "분양시장 수요가 식고 있나?",
+        "metric_ids": ["unsold_housing"],
+        "series_dimension": "region",
+        "filters": {"region": ["서울", "경기", "인천", "수도권"]},
+        "transform": "raw",
+        "aggregation": "last",
+        "chart": "area",
+    },
+    {
+        "id": "housing_permits",
+        "name": "주택 인허가 물량 (미래 공급)",
+        "question": "2~3년 뒤 입주물량이 늘고 있나 줄고 있나?",
+        "metric_ids": ["housing_permits"],
+        "series_dimension": "region",
+        "filters": {"region": ["서울", "경기", "인천"]},
+        "transform": "raw",
+        "aggregation": "sum",
+        "chart": "bar",
+    },
+    {
+        "id": "land_price",
+        "name": "수도권 지가변동률",
+        "question": "토지시장 온도는 주택과 같은가?",
+        "metric_ids": ["land_price_change"],
+        "series_dimension": "region",
+        "filters": {"region": ["서울", "경기", "인천", "전국"]},
+        "transform": "raw",
+        "aggregation": "avg",
+        "chart": "bar",
+    },
+]
+
+
+def _real_estate_dimension_options(combos: list[dict]) -> dict:
+    options: dict[str, list[str]] = {name: [] for name in REAL_ESTATE_DIMENSIONS}
+    for row in combos:
+        for name in REAL_ESTATE_DIMENSIONS:
+            value = row.get(name)
+            if value and value not in options[name]:
+                options[name].append(str(value))
+    for values in options.values():
+        values.sort()
+    return options
+
+
+def _real_estate_request(payload: dict) -> dict:
+    metric_ids = [str(value) for value in (payload.get("metric_ids") or []) if value]
+    if not metric_ids and payload.get("metric_id"):
+        metric_ids = [str(payload["metric_id"])]
+    if not metric_ids:
+        raise ValueError("metric_ids는 최소 1개가 필요합니다.")
+    bucket = str(payload.get("bucket") or "month")
+    if bucket not in REAL_ESTATE_BUCKETS:
+        raise ValueError(f"bucket은 {', '.join(REAL_ESTATE_BUCKETS)} 중 하나여야 합니다.")
+    aggregation = str(payload.get("aggregation") or "avg")
+    if aggregation not in REAL_ESTATE_AGGREGATIONS:
+        raise ValueError(f"aggregation은 {', '.join(REAL_ESTATE_AGGREGATIONS)} 중 하나여야 합니다.")
+    series_dimension = str(payload.get("series_dimension") or "region")
+    if series_dimension not in REAL_ESTATE_DIMENSIONS:
+        raise ValueError(f"series_dimension은 {', '.join(REAL_ESTATE_DIMENSIONS)} 중 하나여야 합니다.")
+    transform = str(payload.get("transform") or "raw")
+    if transform not in REAL_ESTATE_TRANSFORMS:
+        raise ValueError(f"transform은 {', '.join(REAL_ESTATE_TRANSFORMS)} 중 하나여야 합니다.")
+    if transform == "ratio" and len(metric_ids) != 2:
+        raise ValueError("비율 변환은 지표를 정확히 2개 선택해야 합니다.")
+
+    filters: dict[str, list[str]] = {"metric_id": metric_ids}
+    for name in ("region", "region_tier", "property_type", "deal_type"):
+        values = [str(value) for value in (payload.get("filters") or {}).get(name, []) if value]
+        if values:
+            filters[name] = values
+    return {
+        "metric_id": metric_ids[0],
+        "metric_ids": metric_ids,
+        "filters": filters,
+        "bucket": bucket,
+        "aggregation": aggregation,
+        "series_dimension": series_dimension,
+        "transform": transform,
+        "start_date": str(payload["start_date"]) if payload.get("start_date") else None,
+        "end_date": str(payload["end_date"]) if payload.get("end_date") else None,
+    }
+
+
+def _shift_period(bucket_date: date, bucket: str, periods: int) -> date:
+    if bucket == "week":
+        return bucket_date - timedelta(weeks=periods)
+    months = periods * (3 if bucket == "quarter" else 1)
+    total = bucket_date.year * 12 + (bucket_date.month - 1) - months
+    return date(total // 12, total % 12 + 1, 1)
+
+
+def _periods_per_year(bucket: str) -> int:
+    return {"week": 52, "month": 12, "quarter": 4}[bucket]
+
+
+def _real_estate_result(rows: list[dict], request: dict) -> dict:
+    buckets = sorted({str(row["bucket"]) for row in rows})
+    by_series: dict[str, dict[str, float]] = {}
+    unit = ""
+    for row in rows:
+        value = row.get("value")
+        if value is None:
+            continue
+        by_series.setdefault(str(row["series"]), {})[str(row["bucket"])] = float(value)
+        unit = unit or str(row.get("unit") or "")
+
+    if request["transform"] == "ratio":
+        by_series, unit = _real_estate_ratio(rows, request)
+
+    series = []
+    for name, values in by_series.items():
+        points = _transform_series(values, buckets, request)
+        if any(point is not None for point in points):
+            series.append({"name": name, "points": points})
+    series.sort(key=lambda item: item["name"])
+    return {
+        "buckets": buckets,
+        "series": series,
+        "unit": "%" if request["transform"] in {"change", "yoy", "ratio"} else unit,
+        "transform": request["transform"],
+        "transform_label": REAL_ESTATE_TRANSFORMS[request["transform"]],
+        "bucket": request["bucket"],
+        "aggregation": request["aggregation"],
+        "series_dimension": request["series_dimension"],
+        "metric_ids": request["metric_ids"],
+    }
+
+
+def _real_estate_ratio(rows: list[dict], request: dict) -> tuple[dict[str, dict[str, float]], str]:
+    """지표 2개를 고른 비율 모드에서는 첫 지표를 분자로 두고 시리즈별로 나눈다."""
+    numerator, denominator = request["metric_ids"]
+    numerator_values: dict[tuple[str, str], float] = {}
+    denominator_values: dict[tuple[str, str], float] = {}
+    for row in rows:
+        if row.get("value") is None:
+            continue
+        key = (str(row["series"]), str(row["bucket"]))
+        metric = str(row.get("metric_id") or "")
+        target = numerator_values if metric == numerator else denominator_values
+        target[key] = float(row["value"])
+    combined: dict[str, dict[str, float]] = {}
+    for (name, bucket), value in numerator_values.items():
+        base = denominator_values.get((name, bucket))
+        if base:
+            combined.setdefault(name, {})[bucket] = value / base * 100
+    return combined, "%"
+
+
+def _transform_series(values: dict[str, float], buckets: list[str], request: dict) -> list[float | None]:
+    transform = request["transform"]
+    if transform in {"raw", "ratio"}:
+        return [_round_point(values.get(bucket)) for bucket in buckets]
+    if transform == "rebase":
+        base = next((values[bucket] for bucket in buckets if values.get(bucket)), None)
+        if not base:
+            return [None for _ in buckets]
+        return [_round_point(values[bucket] / base * 100) if values.get(bucket) else None for bucket in buckets]
+    lag = 1 if transform == "change" else _periods_per_year(request["bucket"])
+    points: list[float | None] = []
+    for bucket in buckets:
+        current = values.get(bucket)
+        previous_key = _shift_period(date.fromisoformat(bucket), request["bucket"], lag).isoformat()
+        previous = values.get(previous_key)
+        points.append(_round_point((current / previous - 1) * 100) if current is not None and previous else None)
+    return points
+
+
+def _round_point(value: float | None) -> float | None:
+    if value is None:
+        return None
+    return round(float(value), 4)

@@ -34,7 +34,19 @@ Generate and persist the report:
 uv run cluefin-agent daily-report --date 2026-08-26
 ```
 
-The latest report is stored in `market.daily_research_reports` and exposed by `GET /api/research-report` on Cluefin Web.
+## Generating from the dashboard
+
+The same graph runs from the web UI. Start Cluefin Web with the three `CLUEFIN_LLM_*` variables in its process environment and use the **리포트 생성** button on the market-context tab. Without them the button is disabled and the panel names the missing variables instead of failing on submit.
+
+| Route | Purpose |
+|---|---|
+| `POST /api/research-reports/generate` | Start one background run; optional `{"report_date": "YYYY-MM-DD"}`. Returns 409 while another run is in flight. |
+| `GET /api/research-reports/status` | Poll job state and LLM configuration. Never returns the PAT. |
+| `GET /api/research-reports` | Stored reports, newest first, without markdown. |
+| `GET /api/research-reports/{report_id}` | One stored report including markdown. |
+| `GET /api/research-report` | Latest stored report. |
+
+`market.daily_research_reports` is ordered by `(report_date, report_id)`, so regenerating the same day keeps the earlier run instead of replacing it. Every run stays selectable in the dashboard history list.
 
 ## Daily schedule
 
