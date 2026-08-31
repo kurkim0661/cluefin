@@ -35,8 +35,17 @@ class FakeModel:
 def test_prepare_report_prompt_contains_evidence_contract() -> None:
     prompt = prepare_report_prompt({"report_date": "2026-08-26", "coverage": {"observed": 10}})
 
-    assert "관측 → 일반적 영향 → 이번 해석" in prompt
+    assert "관측 / 영향 / 해석 / 반대 근거" in prompt
+    assert "| 영역 | 핵심 지표 | 값 | 최근 변화 | 판단 |" in prompt
     assert '"observed":10' in prompt
+
+
+def test_system_prompt_requires_line_broken_blocks_and_display_numbers() -> None:
+    from cluefin_agent.graph import SYSTEM_PROMPT
+
+    assert "value_display" in SYSTEM_PROMPT
+    assert "78601.4032035769" in SYSTEM_PROMPT
+    assert "네 단계를 한 문단에 이어 붙이지 않는다" in SYSTEM_PROMPT
 
 
 def test_langgraph_generates_validates_and_persists_report() -> None:

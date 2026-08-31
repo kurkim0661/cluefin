@@ -42,14 +42,20 @@ class ResearchDataRepository:
             previous = history[-2] if len(history) > 1 else None
             change = float(latest["value"]) - float(previous["value"]) if latest and previous else None
             change_pct = change / abs(float(previous["value"])) if change is not None and previous["value"] else None
+            unit = definition.get("unit")
+            value = float(latest["value"]) if latest else None
+            # The model quotes these strings verbatim, so raw float precision never reaches the report.
             indicators.append(
                 {
                     **definition,
-                    "value": float(latest["value"]) if latest else None,
+                    "value": value,
+                    "value_display": display_number(value, unit),
                     "period": latest.get("observed_on") if latest else None,
                     "provider": latest.get("provider") if latest else None,
                     "change": change,
+                    "change_display": display_number(change, unit, signed=True),
                     "change_pct": change_pct,
+                    "change_pct_display": display_percent(change_pct),
                     "points": len(history),
                 }
             )
@@ -141,6 +147,43 @@ class ResearchDataRepository:
             {column: _json_value(value) for column, value in zip(result.column_names, row, strict=False)}
             for row in result.result_rows
         ]
+
+
+def display_number(value: float | None, unit: str | None = None, *, signed: bool = False) -> str | None:
+    """Format one observation the way it should be read in a report."""
+    if value is None:
+        return None
+    unit_text = (unit or "").strip()
+    magnitude = abs(value)
+    money = unit_text.upper().startswith(("USD", "KRW")) and " " not in unit_text
+    if money and magnitude >= 1_000_000_000_000:
+        text = f"{value / 1_000_000_000_000:,.2f}조"
+    elif money and magnitude >= 1_000_000_000:
+        text = f"{value / 1_000_000_000:,.2f}B"
+    elif money and magnitude >= 1_000_000:
+        text = f"{value / 1_000_000:,.2f}M"
+    elif magnitude >= 1000:
+        text = f"{value:,.0f}"
+    elif unit_text in {"%", "%p", "ratio"} and magnitude >= 0.01:
+        text = f"{value:,.2f}"
+    elif magnitude >= 10:
+        text = f"{value:,.2f}"
+    elif magnitude >= 0.01:
+        text = f"{value:,.3f}"
+    elif magnitude > 0:
+        text = f"{value:.4g}"
+    else:
+        text = "0"
+    text = text.rstrip("0").rstrip(".") if "." in text and "e" not in text else text
+    if signed and value > 0:
+        text = f"+{text}"
+    return f"{text} {unit_text}".strip() if unit_text else text
+
+
+def display_percent(value: float | None) -> str | None:
+    if value is None:
+        return None
+    return f"{value * 100:+.2f}%"
 
 
 def _json_value(value: Any) -> Any:

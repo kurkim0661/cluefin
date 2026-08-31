@@ -69,6 +69,7 @@ testpaths = [
     "packages/cluefin-ta/tests",
     "packages/cluefin-xbrl/tests",
     "packages/cluefin-store/tests",
+    "packages/cluefin-agent/tests",
     "apps/cluefin-cli/tests",
     "apps/cluefin-web/tests",
     "apps/cluefin-openapi-cli/tests",
