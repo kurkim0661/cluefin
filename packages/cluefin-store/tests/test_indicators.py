@@ -3,6 +3,8 @@ from __future__ import annotations
 from datetime import date, datetime
 from uuid import UUID
 
+import pytest
+
 from cluefin_store.indicators import (
     INDICATOR_CATALOG,
     BinanceFuturesProvider,
@@ -168,7 +170,7 @@ def test_ecos_provider_normalizes_bank_of_korea_observations() -> None:
                     "StatisticSearch": {
                         "row": [
                             {
-                                "TIME": "202608",
+                                "TIME": "20260826",
                                 "DATA_VALUE": "2.75",
                                 "UNIT_NAME": "연%",
                                 "ITEM_NAME1": "한국은행 기준금리",
@@ -190,7 +192,35 @@ def test_ecos_provider_normalizes_bank_of_korea_observations() -> None:
     )
 
     assert rows[0].value == 2.75
-    assert "722Y001/M/202608/202608/0101000" in session.calls[0][0]
+    # The policy rate uses the daily cycle so a rate decision shows up the same day.
+    assert "722Y001/D/20260801/20260826/0101000" in session.calls[0][0]
+
+
+def test_ecos_provider_treats_empty_window_as_no_rows() -> None:
+    session = QueueSession(
+        [FakeResponse(payload={"RESULT": {"CODE": "INFO-200", "MESSAGE": "해당하는 데이터가 없습니다."}})]
+    )
+    provider = EcosProvider(api_key="sample", session=session)
+
+    rows = provider.collect(
+        (_spec("kr_policy_rate"),),
+        date(2026, 8, 13),
+        date(2026, 8, 27),
+        RUN_ID,
+        COLLECTED_AT,
+    )
+
+    assert rows == []
+
+
+def test_ecos_provider_still_raises_on_real_errors() -> None:
+    session = QueueSession(
+        [FakeResponse(payload={"RESULT": {"CODE": "INFO-100", "MESSAGE": "인증키가 유효하지 않습니다."}})]
+    )
+    provider = EcosProvider(api_key="sample", session=session)
+
+    with pytest.raises(RuntimeError, match="인증키"):
+        provider.collect((_spec("kr_policy_rate"),), date(2026, 8, 1), date(2026, 8, 27), RUN_ID, COLLECTED_AT)
 
 
 def test_binance_provider_normalizes_funding_and_open_interest() -> None:
@@ -225,6 +255,89 @@ def test_binance_provider_normalizes_funding_and_open_interest() -> None:
     values = {row.indicator_id: row.value for row in rows}
     assert values["crypto_funding_rate"] == 0.02
     assert values["crypto_open_interest"] == 8368057784.967
+
+
+def test_binance_provider_reads_symbol_from_each_spec() -> None:
+    session = QueueSession(
+        [
+            FakeResponse(payload=[{"fundingTime": 1787702400000, "fundingRate": "0.00002"}]),
+            FakeResponse(payload=[{"timestamp": 1787702400000, "sumOpenInterestValue": "1234.5"}]),
+            FakeResponse(payload=[{"fundingTime": 1787702400000, "fundingRate": "-0.00001"}]),
+        ]
+    )
+    provider = BinanceFuturesProvider(session=session)
+
+    rows = provider.collect(
+        (_spec("eth_funding_rate"), _spec("eth_open_interest"), _spec("xrp_funding_rate")),
+        date(2026, 8, 25),
+        date(2026, 8, 26),
+        RUN_ID,
+        COLLECTED_AT,
+    )
+
+    assert {row.indicator_id for row in rows} == {"eth_funding_rate", "eth_open_interest", "xrp_funding_rate"}
+    assert [call[1]["params"]["symbol"] for call in session.calls] == ["ETHUSDT", "ETHUSDT", "XRPUSDT"]
+
+
+def test_coingecko_provider_resolves_dominance_for_every_coin() -> None:
+    session = QueueSession(
+        [
+            FakeResponse(
+                payload={
+                    "data": {
+                        "total_market_cap": {"usd": 2_600_000_000_000},
+                        "total_volume": {"usd": 90_000_000_000},
+                        "market_cap_percentage": {"btc": 59.2, "eth": 11.1, "xrp": 3.3},
+                        "market_cap_change_percentage_24h_usd": -1.2,
+                    }
+                }
+            )
+        ]
+    )
+    provider = CoinGeckoProvider(session=session)
+
+    rows = provider.collect(
+        (_spec("btc_dominance"), _spec("eth_dominance"), _spec("xrp_dominance")),
+        date(2026, 8, 26),
+        date(2026, 8, 26),
+        RUN_ID,
+        COLLECTED_AT,
+    )
+
+    assert {row.indicator_id: row.value for row in rows} == {
+        "btc_dominance": 59.2,
+        "eth_dominance": 11.1,
+        "xrp_dominance": 3.3,
+    }
+
+
+def test_coingecko_provider_reports_missing_dominance_without_dropping_others() -> None:
+    session = QueueSession(
+        [
+            FakeResponse(
+                payload={
+                    "data": {
+                        "total_market_cap": {"usd": 1.0},
+                        "total_volume": {"usd": 1.0},
+                        "market_cap_percentage": {"btc": 59.2},
+                        "market_cap_change_percentage_24h_usd": -1.2,
+                    }
+                }
+            )
+        ]
+    )
+    provider = CoinGeckoProvider(session=session)
+
+    rows = provider.collect(
+        (_spec("btc_dominance"), _spec("xrp_dominance")),
+        date(2026, 8, 26),
+        date(2026, 8, 26),
+        RUN_ID,
+        COLLECTED_AT,
+    )
+
+    assert [row.indicator_id for row in rows] == ["btc_dominance"]
+    assert any("xrp_dominance" in error for error in provider.errors)
 
 
 def test_licensed_provider_uses_pat_and_normalized_contract() -> None:
@@ -332,3 +445,92 @@ def test_pipeline_always_writes_full_catalog_and_provider_summary() -> None:
     assert summary["providers"]["fred"] == 0
     assert "market.indicator_definitions" in store.inserted
     assert "market.indicator_observations" in store.inserted
+
+
+def _observation_record(indicator_id: str, period: date, value: float):
+    from cluefin_store.models import IndicatorObservation
+
+    return IndicatorObservation(
+        period=period,
+        indicator_id=indicator_id,
+        provider="coinmetrics",
+        value=value,
+        metadata_json="{}",
+        run_id=RUN_ID,
+        collected_at=COLLECTED_AT,
+    )
+
+
+def test_derived_metrics_cover_btc_eth_and_xrp() -> None:
+    from cluefin_store.indicators import _derive_observations
+
+    period = date(2026, 8, 27)
+    observations = [
+        _observation_record("btc_price_usd", period, 78_601.0),
+        _observation_record("btc_mvrv", period, 2.0),
+        _observation_record("eth_price_usd", period, 2_512.0),
+        _observation_record("eth_mvrv", period, 1.25),
+        _observation_record("xrp_price_usd", period, 1.5),
+        _observation_record("xrp_mvrv", period, 1.0),
+        _observation_record("eth_active_addresses", period, 900_000.0),
+        _observation_record("eth_transactions", period, 1_800_000.0),
+    ]
+
+    derived = {
+        row.indicator_id: row.value
+        for row in _derive_observations(observations, INDICATOR_CATALOG, RUN_ID, COLLECTED_AT)
+    }
+
+    assert derived["btc_realized_price"] == 78_601.0 / 2.0
+    assert derived["eth_realized_price"] == 2_512.0 / 1.25
+    assert derived["xrp_realized_price"] == 1.5
+    assert derived["eth_nupl"] == 1 - 1 / 1.25
+    assert derived["xrp_nupl"] == 0.0
+    assert derived["eth_active_addresses_ratio"] == 0.5
+
+
+def test_derived_metrics_skip_assets_without_source_values() -> None:
+    from cluefin_store.indicators import _derive_observations
+
+    period = date(2026, 8, 27)
+    observations = [
+        _observation_record("btc_price_usd", period, 78_601.0),
+        _observation_record("btc_mvrv", period, 2.0),
+    ]
+
+    derived = {row.indicator_id for row in _derive_observations(observations, INDICATOR_CATALOG, RUN_ID, COLLECTED_AT)}
+
+    assert "btc_realized_price" in derived
+    assert "eth_realized_price" not in derived
+    assert "xrp_nupl" not in derived
+
+
+def test_ecos_monthly_series_still_uses_lookback_window() -> None:
+    session = QueueSession(
+        [
+            FakeResponse(
+                payload={
+                    "StatisticSearch": {
+                        "row": [
+                            {"TIME": "202507", "DATA_VALUE": "100", "UNIT_NAME": "2020=100"},
+                            {"TIME": "202607", "DATA_VALUE": "164.2", "UNIT_NAME": "2020=100"},
+                        ]
+                    }
+                }
+            )
+        ]
+    )
+    provider = EcosProvider(api_key="sample", session=session)
+
+    rows = provider.collect(
+        (_spec("kr_export_value_index_yoy"),),
+        date(2026, 8, 14),
+        date(2026, 8, 28),
+        RUN_ID,
+        COLLECTED_AT,
+    )
+
+    # A YoY monthly series requests a full extra year before the 4-month lookback window.
+    assert "403Y001/M/202504/202608/" in session.calls[0][0]
+    assert rows[0].period == date(2026, 7, 1)
+    assert round(rows[0].value, 2) == 64.20

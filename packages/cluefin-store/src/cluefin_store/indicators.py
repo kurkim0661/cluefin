@@ -33,6 +33,7 @@ COINGECKO_GLOBAL_URL = "https://api.coingecko.com/api/v3/global"
 COINGECKO_PAXG_URL = "https://api.coingecko.com/api/v3/coins/pax-gold/market_chart"
 BINANCE_FUNDING_URL = "https://fapi.binance.com/fapi/v1/fundingRate"
 BINANCE_OPEN_INTEREST_URL = "https://fapi.binance.com/futures/data/openInterestHist"
+MONTHLY_LOOKBACK_MONTHS = 4
 
 
 @dataclass(frozen=True, slots=True)
@@ -834,13 +835,13 @@ INDICATOR_CATALOG: tuple[IndicatorSpec, ...] = (
         "korea",
         "rates",
         "ecos",
-        "722Y001:M:0101000",
+        "722Y001:D:0101000",
         "%",
-        "monthly",
+        "daily",
         "risk_off",
         3,
-        "한국은행 기준금리 월말 수준",
-        "공개 ECOS 호출로 수집하며 개인 인증키가 있으면 더 높은 호출 한도를 사용합니다.",
+        "한국은행 기준금리 일별 적용 수준",
+        "월간 시리즈는 한 달 이상 지연되므로 발표 당일 반영되는 일별 시리즈를 사용합니다.",
         "https://ecos.bok.or.kr/",
     ),
     IndicatorSpec(
@@ -1174,6 +1175,267 @@ INDICATOR_CATALOG: tuple[IndicatorSpec, ...] = (
         "derived",
     ),
     IndicatorSpec(
+        "eth_realized_price",
+        "이더리움 실현가격",
+        "Ethereum Realized Price",
+        "crypto",
+        "onchain",
+        "derived",
+        "eth:PriceUSD/CapMVRVCur",
+        "USD",
+        "daily",
+        "context",
+        2,
+        "이더리움 가격을 MVRV로 나눈 전체 공급의 추정 취득원가",
+        "가격이 실현가격 아래로 내려가면 시장 전체 손실 구간을 뜻할 수 있습니다.",
+        "https://docs.coinmetrics.io/",
+        "derived",
+    ),
+    IndicatorSpec(
+        "eth_nupl",
+        "이더리움 NUPL",
+        "Ethereum NUPL",
+        "crypto",
+        "onchain",
+        "derived",
+        "eth:1-1/CapMVRVCur",
+        "ratio",
+        "daily",
+        "context",
+        2,
+        "이더리움 MVRV로 계산한 전체 공급의 순미실현 손익 비율",
+        "0 아래는 시장 전체 손실 우위, 높은 값은 차익실현 압력 확대를 뜻할 수 있습니다.",
+        "https://docs.coinmetrics.io/",
+        "derived",
+    ),
+    IndicatorSpec(
+        "eth_active_addresses_ratio",
+        "이더리움 거래당 활성 주소",
+        "Ethereum Active Addresses per Transaction",
+        "crypto",
+        "onchain",
+        "derived",
+        "eth:AdrActCnt/TxCnt",
+        "ratio",
+        "daily",
+        "context",
+        1,
+        "활성 주소를 거래 수로 나눈 사용 밀도 대용치",
+        "값이 낮아지면 소수 주소가 거래를 반복하는 봇·거래소 활동일 수 있습니다.",
+        "https://docs.coinmetrics.io/",
+        "derived",
+    ),
+    IndicatorSpec(
+        "eth_dominance",
+        "이더리움 도미넌스",
+        "Ethereum Dominance",
+        "crypto",
+        "positioning",
+        "coingecko",
+        "market_cap_percentage.eth",
+        "%",
+        "daily",
+        "context",
+        2,
+        "전체 코인 시가총액 중 이더리움 비중",
+        "상승은 비트코인 대비 알트코인 선호가 살아나는 신호일 수 있습니다.",
+        "https://www.coingecko.com/",
+    ),
+    IndicatorSpec(
+        "eth_funding_rate",
+        "이더리움 무기한선물 펀딩비",
+        "Ethereum Perpetual Funding Rate",
+        "crypto",
+        "positioning",
+        "binance",
+        "ETHUSDT:fundingRate",
+        "%",
+        "daily",
+        "context",
+        2,
+        "Binance ETHUSDT 무기한선물의 일평균 펀딩비",
+        "펀더멘털이 아니라 레버리지 쏠림을 확인하는 지표입니다.",
+        "https://www.binance.com/en/futures/ETHUSDT",
+    ),
+    IndicatorSpec(
+        "eth_open_interest",
+        "이더리움 선물 미결제약정",
+        "Ethereum Futures Open Interest",
+        "crypto",
+        "positioning",
+        "binance",
+        "ETHUSDT:openInterest",
+        "USD",
+        "daily",
+        "risk_off",
+        2,
+        "Binance ETHUSDT 선물 미결제약정 달러 가치",
+        "가격과 함께 급증하면 청산 위험이 커질 수 있습니다.",
+        "https://www.binance.com/en/futures/ETHUSDT",
+    ),
+    IndicatorSpec(
+        "xrp_price_usd",
+        "리플 기준가격",
+        "XRP Price USD",
+        "crypto",
+        "market",
+        "coinmetrics",
+        "xrp:PriceUSD",
+        "USD",
+        "daily",
+        "context",
+        2,
+        "Coin Metrics의 리플 달러 기준가격",
+        "온체인 활동과 가격 효과를 분리할 때 기준으로 사용합니다.",
+        "https://docs.coinmetrics.io/",
+    ),
+    IndicatorSpec(
+        "xrp_mvrv",
+        "리플 MVRV",
+        "XRP MVRV",
+        "crypto",
+        "onchain",
+        "coinmetrics",
+        "xrp:CapMVRVCur",
+        "ratio",
+        "daily",
+        "context",
+        2,
+        "리플 시장가치와 실현가치의 비율",
+        "1 아래면 평균 취득원가보다 낮은 가격이라는 뜻입니다.",
+        "https://docs.coinmetrics.io/",
+    ),
+    IndicatorSpec(
+        "xrp_realized_price",
+        "리플 실현가격",
+        "XRP Realized Price",
+        "crypto",
+        "onchain",
+        "derived",
+        "xrp:PriceUSD/CapMVRVCur",
+        "USD",
+        "daily",
+        "context",
+        2,
+        "리플 가격을 MVRV로 나눈 전체 공급의 추정 취득원가",
+        "가격이 실현가격 아래면 보유자 다수가 손실 구간일 수 있습니다.",
+        "https://docs.coinmetrics.io/",
+        "derived",
+    ),
+    IndicatorSpec(
+        "xrp_nupl",
+        "리플 NUPL",
+        "XRP NUPL",
+        "crypto",
+        "onchain",
+        "derived",
+        "xrp:1-1/CapMVRVCur",
+        "ratio",
+        "daily",
+        "context",
+        1,
+        "리플 MVRV로 계산한 전체 공급의 순미실현 손익 비율",
+        "0 아래는 시장 전체 손실 우위를 뜻할 수 있습니다.",
+        "https://docs.coinmetrics.io/",
+        "derived",
+    ),
+    IndicatorSpec(
+        "xrp_active_addresses",
+        "리플 활성 주소",
+        "XRP Active Addresses",
+        "crypto",
+        "onchain",
+        "coinmetrics",
+        "xrp:AdrActCnt",
+        "count",
+        "daily",
+        "risk_on",
+        2,
+        "하루 동안 활동한 리플 주소 수",
+        "거래소 내부 이동 비중이 커서 추세로만 봅니다.",
+        "https://docs.coinmetrics.io/",
+    ),
+    IndicatorSpec(
+        "xrp_transactions",
+        "리플 거래 수",
+        "XRP Transactions",
+        "crypto",
+        "onchain",
+        "coinmetrics",
+        "xrp:TxCnt",
+        "count",
+        "daily",
+        "risk_on",
+        2,
+        "리플 원장의 일간 거래 수",
+        "결제·환전 사용량을 보는 기본 지표입니다.",
+        "https://docs.coinmetrics.io/",
+    ),
+    IndicatorSpec(
+        "xrp_supply",
+        "리플 유통량",
+        "XRP Current Supply",
+        "crypto",
+        "supply",
+        "coinmetrics",
+        "xrp:SplyCur",
+        "XRP",
+        "daily",
+        "context",
+        1,
+        "현재 유통 중인 리플 공급량",
+        "에스크로 해제 일정과 함께 봐야 희석 여부를 알 수 있습니다.",
+        "https://docs.coinmetrics.io/",
+    ),
+    IndicatorSpec(
+        "xrp_dominance",
+        "리플 도미넌스",
+        "XRP Dominance",
+        "crypto",
+        "positioning",
+        "coingecko",
+        "market_cap_percentage.xrp",
+        "%",
+        "daily",
+        "context",
+        1,
+        "전체 코인 시가총액 중 리플 비중",
+        "특정 알트코인으로의 자금 쏠림을 보는 보조지표입니다.",
+        "https://www.coingecko.com/",
+    ),
+    IndicatorSpec(
+        "xrp_funding_rate",
+        "리플 무기한선물 펀딩비",
+        "XRP Perpetual Funding Rate",
+        "crypto",
+        "positioning",
+        "binance",
+        "XRPUSDT:fundingRate",
+        "%",
+        "daily",
+        "context",
+        1,
+        "Binance XRPUSDT 무기한선물의 일평균 펀딩비",
+        "레버리지 쏠림을 확인하는 포지셔닝 지표입니다.",
+        "https://www.binance.com/en/futures/XRPUSDT",
+    ),
+    IndicatorSpec(
+        "xrp_open_interest",
+        "리플 선물 미결제약정",
+        "XRP Futures Open Interest",
+        "crypto",
+        "positioning",
+        "binance",
+        "XRPUSDT:openInterest",
+        "USD",
+        "daily",
+        "risk_off",
+        1,
+        "Binance XRPUSDT 선물 미결제약정 달러 가치",
+        "가격과 함께 급증하면 청산 위험이 커질 수 있습니다.",
+        "https://www.binance.com/en/futures/XRPUSDT",
+    ),
+    IndicatorSpec(
         "equity_forward_pe",
         "주식시장 선행 PER",
         "Equity Forward P/E",
@@ -1461,15 +1723,18 @@ class CoinGeckoProvider:
                 values = {
                     "total_market_cap.usd": data["total_market_cap"]["usd"],
                     "total_volume.usd": data["total_volume"]["usd"],
-                    "market_cap_percentage.btc": data["market_cap_percentage"]["btc"],
                     "market_cap_change_percentage_24h_usd": data["market_cap_change_percentage_24h_usd"],
                 }
+                # Dominance is exposed per coin, so any market_cap_percentage.<coin> spec resolves here.
+                for coin, share in (data.get("market_cap_percentage") or {}).items():
+                    values[f"market_cap_percentage.{coin}"] = share
                 period = collected_at.date()
                 if start_date <= period <= end_date:
-                    rows.extend(
-                        _observation(spec, period, float(values[spec.source_series]), run_id, collected_at)
-                        for spec in global_specs
-                    )
+                    for spec in global_specs:
+                        if spec.source_series not in values:
+                            self.errors.append(f"{spec.indicator_id}: series not in global response")
+                            continue
+                        rows.append(_observation(spec, period, float(values[spec.source_series]), run_id, collected_at))
             except (requests.RequestException, ValueError, KeyError, TypeError) as exc:
                 self.errors.append(f"global: {type(exc).__name__}")
 
@@ -1512,71 +1777,72 @@ class BinanceFuturesProvider:
 
     def collect(self, specs, start_date, end_date, run_id, collected_at) -> list[IndicatorObservation]:
         self.errors = []
-        by_id = {spec.indicator_id: spec for spec in specs}
         rows: list[IndicatorObservation] = []
-        funding_spec = by_id.get("crypto_funding_rate")
-        if funding_spec is not None:
+        for spec in specs:
+            symbol, _, field = spec.source_series.partition(":")
             try:
-                start_ms = int(
-                    datetime.combine(start_date, datetime.min.time(), tzinfo=timezone.utc).timestamp() * 1000
-                )
-                end_ms = int(datetime.combine(end_date, datetime.max.time(), tzinfo=timezone.utc).timestamp() * 1000)
-                funding_by_date: dict[date, list[float]] = defaultdict(list)
-                while start_ms <= end_ms:
-                    response = self.session.get(
-                        BINANCE_FUNDING_URL,
-                        params={"symbol": "BTCUSDT", "startTime": start_ms, "endTime": end_ms, "limit": 1000},
-                        timeout=self.timeout,
-                    )
-                    response.raise_for_status()
-                    payload = response.json()
-                    if not payload:
-                        break
-                    for item in payload:
-                        period = datetime.fromtimestamp(int(item["fundingTime"]) / 1000, tz=timezone.utc).date()
-                        funding_by_date[period].append(float(item["fundingRate"]) * 100)
-                    last_time = int(payload[-1]["fundingTime"])
-                    if len(payload) < 1000 or last_time >= end_ms:
-                        break
-                    start_ms = last_time + 1
-                for period, values in sorted(funding_by_date.items()):
-                    rows.append(
-                        _observation(
-                            funding_spec,
-                            period,
-                            sum(values) / len(values),
-                            run_id,
-                            collected_at,
-                            {"symbol": "BTCUSDT", "samples": len(values)},
-                        )
-                    )
+                if field == "fundingRate":
+                    rows.extend(self._funding(spec, symbol, start_date, end_date, run_id, collected_at))
+                elif field == "openInterest":
+                    rows.extend(self._open_interest(spec, symbol, start_date, end_date, run_id, collected_at))
             except (requests.RequestException, ValueError, KeyError, TypeError) as exc:
-                self.errors.append(f"funding: {type(exc).__name__}")
+                self.errors.append(f"{spec.indicator_id}: {type(exc).__name__}")
+        return rows
 
-        open_interest_spec = by_id.get("crypto_open_interest")
-        if open_interest_spec is not None:
-            try:
-                response = self.session.get(
-                    BINANCE_OPEN_INTEREST_URL,
-                    params={"symbol": "BTCUSDT", "period": "1d", "limit": 30},
-                    timeout=self.timeout,
+    def _funding(self, spec, symbol, start_date, end_date, run_id, collected_at) -> list[IndicatorObservation]:
+        start_ms = int(datetime.combine(start_date, datetime.min.time(), tzinfo=timezone.utc).timestamp() * 1000)
+        end_ms = int(datetime.combine(end_date, datetime.max.time(), tzinfo=timezone.utc).timestamp() * 1000)
+        funding_by_date: dict[date, list[float]] = defaultdict(list)
+        while start_ms <= end_ms:
+            response = self.session.get(
+                BINANCE_FUNDING_URL,
+                params={"symbol": symbol, "startTime": start_ms, "endTime": end_ms, "limit": 1000},
+                timeout=self.timeout,
+            )
+            response.raise_for_status()
+            payload = response.json()
+            if not payload:
+                break
+            for item in payload:
+                period = datetime.fromtimestamp(int(item["fundingTime"]) / 1000, tz=timezone.utc).date()
+                funding_by_date[period].append(float(item["fundingRate"]) * 100)
+            last_time = int(payload[-1]["fundingTime"])
+            if len(payload) < 1000 or last_time >= end_ms:
+                break
+            start_ms = last_time + 1
+        return [
+            _observation(
+                spec,
+                period,
+                sum(values) / len(values),
+                run_id,
+                collected_at,
+                {"symbol": symbol, "samples": len(values)},
+            )
+            for period, values in sorted(funding_by_date.items())
+        ]
+
+    def _open_interest(self, spec, symbol, start_date, end_date, run_id, collected_at) -> list[IndicatorObservation]:
+        response = self.session.get(
+            BINANCE_OPEN_INTEREST_URL,
+            params={"symbol": symbol, "period": "1d", "limit": 30},
+            timeout=self.timeout,
+        )
+        response.raise_for_status()
+        rows: list[IndicatorObservation] = []
+        for item in response.json():
+            period = datetime.fromtimestamp(int(item["timestamp"]) / 1000, tz=timezone.utc).date()
+            if start_date <= period <= end_date:
+                rows.append(
+                    _observation(
+                        spec,
+                        period,
+                        float(item["sumOpenInterestValue"]),
+                        run_id,
+                        collected_at,
+                        {"symbol": symbol},
+                    )
                 )
-                response.raise_for_status()
-                for item in response.json():
-                    period = datetime.fromtimestamp(int(item["timestamp"]) / 1000, tz=timezone.utc).date()
-                    if start_date <= period <= end_date:
-                        rows.append(
-                            _observation(
-                                open_interest_spec,
-                                period,
-                                float(item["sumOpenInterestValue"]),
-                                run_id,
-                                collected_at,
-                                {"symbol": "BTCUSDT"},
-                            )
-                        )
-            except (requests.RequestException, ValueError, KeyError, TypeError) as exc:
-                self.errors.append(f"open_interest: {type(exc).__name__}")
         return rows
 
 
@@ -1594,8 +1860,13 @@ class EcosProvider:
             parts = spec.source_series.split(":")
             stat_code, cycle, item_code = parts[:3]
             transform = parts[3] if len(parts) > 3 else "level"
+            # A monthly period almost never falls inside a daily collection window, and ECOS
+            # publishes with a lag, so monthly series look back a few months instead.
+            window_start = _shift_months(start_date, -MONTHLY_LOOKBACK_MONTHS) if cycle == "M" else start_date
             request_start = (
-                date(start_date.year - 1, start_date.month, 1) if transform == "yoy" and cycle == "M" else start_date
+                date(window_start.year - 1, window_start.month, 1)
+                if transform == "yoy" and cycle == "M"
+                else window_start
             )
             source_rows = self._search(
                 stat_code=stat_code,
@@ -1616,7 +1887,7 @@ class EcosProvider:
                     if previous in {None, 0}:
                         continue
                     value = (value - previous) / abs(previous) * 100
-                if start_date <= period <= end_date:
+                if window_start <= period <= end_date:
                     rows.append(
                         _observation(
                             spec,
@@ -1652,7 +1923,12 @@ class EcosProvider:
                 raise RuntimeError(f"ECOS HTTP {response.status_code}")
             payload = response.json()
             if payload.get("RESULT"):
-                raise RuntimeError(str(payload["RESULT"].get("MESSAGE") or payload["RESULT"]))
+                result_code = str(payload["RESULT"].get("CODE") or "")
+                message = str(payload["RESULT"].get("MESSAGE") or payload["RESULT"])
+                # INFO-200 means the window simply holds no rows; that is an empty result, not a failure.
+                if result_code == "INFO-200" or "해당하는 데이터가 없습니다" in message:
+                    return rows
+                raise RuntimeError(message)
             result = payload.get("StatisticSearch", {})
             page_rows = result.get("row", [])
             rows.extend(page_rows)
@@ -2128,33 +2404,51 @@ def _derive_observations(
         )
         for period in sorted(common_periods)
     )
-    realized_spec = next(item for item in catalog if item.indicator_id == "btc_realized_price")
-    realized_periods = set(values["btc_price_usd"]) & set(values["btc_mvrv"])
-    derived.extend(
-        _observation(
-            realized_spec,
-            period,
-            values["btc_price_usd"][period] / values["btc_mvrv"][period],
-            run_id,
-            collected_at,
-            {"formula": "PriceUSD / CapMVRVCur"},
+    catalog_by_id = {item.indicator_id: item for item in catalog}
+    for asset in ("btc", "eth", "xrp"):
+        price_id, mvrv_id = f"{asset}_price_usd", f"{asset}_mvrv"
+        realized_spec = catalog_by_id.get(f"{asset}_realized_price")
+        if realized_spec is not None:
+            derived.extend(
+                _observation(
+                    realized_spec,
+                    period,
+                    values[price_id][period] / values[mvrv_id][period],
+                    run_id,
+                    collected_at,
+                    {"formula": "PriceUSD / CapMVRVCur", "asset": asset},
+                )
+                for period in sorted(set(values[price_id]) & set(values[mvrv_id]))
+                if values[mvrv_id][period]
+            )
+        nupl_spec = catalog_by_id.get(f"{asset}_nupl")
+        if nupl_spec is not None:
+            derived.extend(
+                _observation(
+                    nupl_spec,
+                    period,
+                    1 - (1 / values[mvrv_id][period]),
+                    run_id,
+                    collected_at,
+                    {"formula": "1 - 1 / CapMVRVCur", "asset": asset},
+                )
+                for period in sorted(values[mvrv_id])
+                if values[mvrv_id][period]
+            )
+    density_spec = catalog_by_id.get("eth_active_addresses_ratio")
+    if density_spec is not None:
+        derived.extend(
+            _observation(
+                density_spec,
+                period,
+                values["eth_active_addresses"][period] / values["eth_transactions"][period],
+                run_id,
+                collected_at,
+                {"formula": "AdrActCnt / TxCnt", "asset": "eth"},
+            )
+            for period in sorted(set(values["eth_active_addresses"]) & set(values["eth_transactions"]))
+            if values["eth_transactions"][period]
         )
-        for period in sorted(realized_periods)
-        if values["btc_mvrv"][period]
-    )
-    nupl_spec = next(item for item in catalog if item.indicator_id == "btc_nupl")
-    derived.extend(
-        _observation(
-            nupl_spec,
-            period,
-            1 - (1 / values["btc_mvrv"][period]),
-            run_id,
-            collected_at,
-            {"formula": "1 - 1 / CapMVRVCur"},
-        )
-        for period in sorted(values["btc_mvrv"])
-        if values["btc_mvrv"][period]
-    )
     eth_supply_spec = next(item for item in catalog if item.indicator_id == "protocol_token_inflation")
     eth_periods = sorted(values["eth_supply"])
     for index in range(30, len(eth_periods)):
@@ -2174,6 +2468,11 @@ def _derive_observations(
             )
         )
     return derived
+
+
+def _shift_months(value: date, months: int) -> date:
+    total = value.year * 12 + (value.month - 1) + months
+    return date(total // 12, total % 12 + 1, 1)
 
 
 def _ecos_period(period: date, cycle: str) -> str:

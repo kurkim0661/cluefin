@@ -13,9 +13,9 @@ The catalog deliberately includes unavailable metrics. `public`, `api_key`, `lic
 |---|---|---|
 | FRED | Rates, real yields, curves, inflation, growth, labor, dollar, credit, liquidity, commodities | Public |
 | DefiLlama | Stablecoin supply, DeFi TVL, fees, and protocol revenue | Public |
-| Coin Metrics Community | BTC/ETH price, MVRV, activity, transactions, supply, and BTC hash rate | Public tier |
-| CoinGecko | Total crypto market cap, volume, BTC dominance, and PAXG gold-price proxy | Public tier |
-| Binance Futures | BTC funding-rate and open-interest history | Public |
+| Coin Metrics Community | BTC/ETH/XRP price, MVRV, activity, transactions, supply, and BTC hash rate | Public tier |
+| CoinGecko | Total crypto market cap, volume, per-coin dominance, and PAXG gold-price proxy | Public tier |
+| Binance Futures | Per-symbol funding-rate and open-interest history (BTC, ETH, XRP) | Public |
 | ECOS | Bank of Korea policy rate and total/semiconductor export-value indexes | Public sample pagination; optional `BOK_ECOS_API_KEY` |
 | Open DART | Latest-universe revenue/profit growth breadth, median ROE, and median debt ratio | `DART_AUTH_KEY` |
 | Korea Customs | First-20-days export YoY from official monthly press releases | Public |
@@ -27,7 +27,9 @@ The Fed net-liquidity series is an explicitly labeled proxy:
 WALCL / 1000 - WTREGEN / 1000 - RRPONTSYD
 ```
 
-Bitcoin realized price is derived as `PriceUSD / CapMVRVCur`, NUPL as `1 - 1/MVRV`, and ETH 30-day supply growth from daily supply. Derived values retain their formula in `metadata_json`.
+Realized price is derived as `PriceUSD / CapMVRVCur` and NUPL as `1 - 1/MVRV` for BTC, ETH, and XRP alike; ETH also derives 30-day supply growth and active-addresses-per-transaction. Derived values retain their formula and asset in `metadata_json`.
+
+Coin Metrics is keyed by `<asset>:<metric>`, Binance by `<symbol>:<field>`, and CoinGecko dominance by `market_cap_percentage.<coin>`, so adding another asset means adding catalog rows only. A dominance series missing from the CoinGecko response is reported per indicator instead of dropping the whole batch.
 
 ## Commands
 
