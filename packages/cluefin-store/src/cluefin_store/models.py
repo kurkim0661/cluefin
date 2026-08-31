@@ -52,6 +52,42 @@ class IndicatorObservation(InsertableRecord):
 
 
 @dataclass(frozen=True, slots=True)
+class RealEstateMetric(InsertableRecord):
+    metric_id: str
+    name_ko: str
+    name_en: str
+    category: str
+    deal_type: str
+    unit: str
+    frequency: str
+    higher_is: str
+    description_ko: str
+    interpretation_ko: str
+    provider: str
+    source_series: str
+    source_url: str
+    updated_at: datetime
+
+
+@dataclass(frozen=True, slots=True)
+class RealEstateObservation(InsertableRecord):
+    period: date
+    week_start: date
+    metric_id: str
+    region: str
+    region_tier: str
+    property_type: str
+    deal_type: str
+    frequency: str
+    unit: str
+    provider: str
+    value: float
+    metadata_json: str
+    run_id: UUID
+    collected_at: datetime
+
+
+@dataclass(frozen=True, slots=True)
 class DailyResearchReport(InsertableRecord):
     report_date: date
     report_id: UUID

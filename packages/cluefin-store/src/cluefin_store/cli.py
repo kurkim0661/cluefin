@@ -16,6 +16,7 @@ from cluefin_store.indicators import (
     import_indicator_csv,
 )
 from cluefin_store.ingestion import TopBackfillConfig, backfill_top_ranked
+from cluefin_store.real_estate import REAL_ESTATE_CATALOG, collect_real_estate
 from cluefin_store.schema import SCHEMA_STATEMENTS
 from cluefin_store.sentiment import GoogleNewsRssSearchProvider, build_sentiment_items, sentiment_query
 from cluefin_store.toss import TossMarketDataProvider
@@ -104,6 +105,38 @@ def update_indicators_command(
         collected_at=datetime.now(),
         catalog=INDICATOR_CATALOG,
         strict=strict,
+    )
+    click.echo(json.dumps(summary, ensure_ascii=False, indent=2, sort_keys=True))
+
+
+@cli.command(name="update-real-estate")
+@click.option("--start-date", type=click.DateTime(formats=["%Y-%m-%d"]))
+@click.option("--end-date", type=click.DateTime(formats=["%Y-%m-%d"]))
+@click.option(
+    "--metric",
+    "metric_ids",
+    multiple=True,
+    type=click.Choice([spec.metric_id for spec in REAL_ESTATE_CATALOG]),
+    help="Collect only these metrics. Repeat the flag for several.",
+)
+@click.option("--strict", is_flag=True, help="Fail the run when any series errors.")
+@click.option("--dry-run", is_flag=True, help="Print the collection plan without network or database access.")
+def update_real_estate_command(start_date, end_date, metric_ids: tuple[str, ...], strict: bool, dry_run: bool) -> None:
+    """Collect capital-area housing price, supply, and land indicators."""
+    resolved_end = date(end_date.year, end_date.month, end_date.day) if end_date else date.today()
+    resolved_start = (
+        date(start_date.year, start_date.month, start_date.day) if start_date else resolved_end - timedelta(days=365)
+    )
+    if resolved_start > resolved_end:
+        raise click.BadParameter("start-date must not be after end-date", param_hint="--start-date")
+
+    summary = collect_real_estate(
+        None if dry_run else ClickHouseStore(),
+        resolved_start,
+        resolved_end,
+        metrics=metric_ids or None,
+        strict=strict,
+        dry_run=dry_run,
     )
     click.echo(json.dumps(summary, ensure_ascii=False, indent=2, sort_keys=True))
 
