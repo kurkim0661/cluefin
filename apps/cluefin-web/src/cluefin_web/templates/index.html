@@ -25,6 +25,7 @@
           <button class="nav-item" type="button" role="tab" aria-selected="false" aria-controls="universe-panel" data-tab="universe"><span>05</span> 종목 탐색</button>
           <button class="nav-item" type="button" role="tab" aria-selected="false" aria-controls="paper-panel" data-tab="paper"><span>06</span> 전략 실험</button>
           <button class="nav-item" type="button" role="tab" aria-selected="false" aria-controls="estate-panel" data-tab="estate"><span>07</span> 부동산</button>
+          <button class="nav-item" type="button" role="tab" aria-selected="false" aria-controls="sql-panel" data-tab="sql"><span>08</span> SQL 워크벤치</button>
         </nav>
         <div class="filters">
           <p class="filter-title">시그널 빠른 필터</p>
@@ -554,6 +555,19 @@
                   <input id="estate-end" name="end_date" type="date" />
                 </div>
                 <div class="estate-field estate-field-wide">
+                  <label for="estate-overlay">가격 추이 겹쳐 보기<small>지표 뒤에 그 시점 매매가격지수를 회색 점선으로 깔아 줍니다</small></label>
+                  <div class="estate-overlay-controls">
+                    <label class="estate-check"><input id="estate-overlay" type="checkbox" name="overlay" /><span>기준선 표시</span></label>
+                    <select id="estate-overlay-metric" name="overlay_metric" aria-label="가격 기준선 지표">
+                      <option value="house_sale_price_index" selected>매매가격지수 (현행)</option>
+                      <option value="house_sale_price_index_long">매매가격지수 (장기)</option>
+                      <option value="apartment_real_transaction_index">아파트 실거래지수</option>
+                    </select>
+                    <select id="estate-overlay-region" name="overlay_region" aria-label="가격 기준선 지역"></select>
+                    <select id="estate-overlay-property" name="overlay_property" aria-label="가격 기준선 주택유형"></select>
+                  </div>
+                </div>
+                <div class="estate-field estate-field-wide">
                   <label>지역 필터<small>비우면 전체</small></label>
                   <div id="estate-filter-region" class="estate-checks" data-dimension="region"></div>
                 </div>
@@ -582,9 +596,80 @@
                 <span id="estate-chart-unit" class="freshness"></span>
               </div>
               <p id="estate-chart-message" class="estate-message" hidden></p>
+              <p id="estate-overlay-note" class="estate-overlay-note" hidden></p>
               <div id="estate-chart" class="estate-chart" aria-label="부동산 시계열 차트"></div>
               <div id="estate-legend" class="estate-legend"></div>
               <div class="estate-table-wrap"><table id="estate-table" class="estate-table"></table></div>
+            </section>
+          </section>
+
+          <section id="sql-panel" class="tab-panel" role="tabpanel" data-panel="sql" hidden>
+            <section class="analysis-intro estate-intro">
+              <div><span class="section-kicker">CLICKHOUSE WORKBENCH</span><h2>SQL 워크벤치</h2><p>원본 테이블의 차원·팩트 컬럼을 직접 골라 쿼리 골격을 만들고, 자연어로 물어 SQL을 받아 실행합니다. 읽기 전용이라 데이터가 바뀌지는 않습니다.</p></div>
+              <div id="sql-coverage" class="estate-coverage">스키마 확인 중</div>
+            </section>
+
+            <div class="sql-layout">
+              <section class="panel sql-schema-panel">
+                <div class="panel-header"><div><h2>원본 테이블</h2><p>컬럼을 체크하면 아래 골격 쿼리에 들어갑니다.</p></div></div>
+                <div class="sql-field">
+                  <label for="sql-table">테이블</label>
+                  <select id="sql-table"></select>
+                </div>
+                <p id="sql-table-meta" class="sql-table-meta"></p>
+                <div class="sql-columns">
+                  <div><h3>차원 (dimension)</h3><div id="sql-dimensions" class="estate-checks"></div></div>
+                  <div><h3>팩트 (fact)</h3><div id="sql-facts" class="estate-checks"></div></div>
+                  <div><h3>시간축</h3><div id="sql-times" class="estate-checks"></div></div>
+                </div>
+                <div class="sql-skeleton-controls">
+                  <div class="sql-field">
+                    <label for="sql-aggregation">집계</label>
+                    <select id="sql-aggregation">
+                      <option value="avg" selected>평균</option>
+                      <option value="sum">합계</option>
+                      <option value="max">최대</option>
+                      <option value="min">최소</option>
+                      <option value="anyLast">마지막 값</option>
+                      <option value="count">행 수</option>
+                    </select>
+                  </div>
+                  <div class="sql-field">
+                    <label for="sql-bucket">기간 단위</label>
+                    <select id="sql-bucket">
+                      <option value="">묶지 않음</option>
+                      <option value="month" selected>월</option>
+                      <option value="quarter">분기</option>
+                      <option value="year">연</option>
+                    </select>
+                  </div>
+                  <button type="button" id="sql-skeleton" class="estate-run">골격 쿼리 만들기</button>
+                </div>
+                <div id="sql-values" class="sql-values"></div>
+              </section>
+
+              <section class="panel sql-editor-panel">
+                <div class="panel-header"><div><h2>쿼리</h2><p>자연어로 물어보거나 직접 쓴 뒤 실행하세요. Ctrl+Enter로도 실행됩니다.</p></div><span id="sql-llm-state" class="freshness"></span></div>
+                <form id="sql-nl-form" class="sql-nl-form">
+                  <input id="sql-question" type="text" placeholder="예: 수도권 미분양과 서울 아파트 매매지수를 월별로 같이 보여줘" autocomplete="off" />
+                  <button type="submit" id="sql-translate" class="estate-run">SQL 만들기</button>
+                </form>
+                <p id="sql-agent-note" class="sql-agent-note" hidden></p>
+                <textarea id="sql-text" class="sql-text" spellcheck="false" rows="12" placeholder="SELECT ... FROM market.real_estate_observations FINAL"></textarea>
+                <div class="sql-actions">
+                  <button type="button" id="sql-run" class="estate-run">실행</button>
+                  <input id="sql-save-name" type="text" placeholder="저장 이름" autocomplete="off" />
+                  <button type="button" id="sql-save" class="ghost-button">쿼리 저장</button>
+                  <button type="button" id="sql-copy" class="ghost-button">결과 CSV 복사</button>
+                </div>
+                <p id="sql-message" class="estate-message" hidden></p>
+                <div id="sql-saved" class="sql-saved"></div>
+              </section>
+            </div>
+
+            <section class="panel sql-result-panel">
+              <div class="panel-header"><div><h2>결과</h2><p id="sql-result-meta">쿼리를 실행하면 여기에 표가 나옵니다.</p></div></div>
+              <div class="estate-table-wrap"><table id="sql-result" class="estate-table sql-result"></table></div>
             </section>
           </section>
         </div>

@@ -5,18 +5,29 @@ import threading
 from datetime import date, datetime
 from typing import Any, Callable
 
-LLM_ENV_VARS = ("CLUEFIN_LLM_PAT", "CLUEFIN_LLM_BASE_URL", "CLUEFIN_LLM_MODEL")
+from cluefin_agent.config import PAT_ENV_VARS, llm_settings_report
+from cluefin_agent.gateway import gateway_hint
+
 MAX_ERROR_CHARS = 500
 
 
+def missing_llm_message(missing: list[str]) -> str:
+    """무엇이 없는지와 어디에 넣어야 하는지를 함께 알려 준다. 값 자체는 절대 담지 않는다."""
+    return (
+        "LLM 설정이 없습니다: "
+        + ", ".join(missing)
+        + ". 저장소 루트 .env에 채우거나(.env.sample 참고) 셸에서 export한 뒤 다시 시작해 주세요."
+        + " OPENAI_API_KEY·OPENAI_BASE_URL·OPENAI_MODEL 같은 이름이 이미 있으면 그대로 인식합니다."
+    )
+
+
 def llm_settings_state() -> dict[str, Any]:
-    """Report which LLM settings are present without exposing any secret value."""
-    missing = [name for name in LLM_ENV_VARS if not os.getenv(name)]
-    return {
-        "configured": not missing,
-        "missing": missing,
-        "model": os.getenv("CLUEFIN_LLM_MODEL") or None,
-    }
+    """Report which LLM settings are present without exposing any secret value.
+
+    해석 규칙은 에이전트와 공유한다. `OPENAI_API_KEY`처럼 이미 export된 이름으로 채워졌으면
+    화면도 "설정됨"으로 보여야 하고, `sources`로 어느 변수에서 읽혔는지 알린다.
+    """
+    return dict(llm_settings_report())
 
 
 def run_daily_report(report_date: date) -> dict[str, Any]:
@@ -66,7 +77,7 @@ class ReportGenerationJob:
     def start(self, report_date: date) -> dict[str, Any]:
         settings = llm_settings_state()
         if not settings["configured"]:
-            raise ValueError("LLM 설정이 없습니다: " + ", ".join(settings["missing"]))
+            raise ValueError(missing_llm_message(settings["missing"]))
         with self._lock:
             if self._state["status"] == "running":
                 raise RuntimeError("이미 리포트를 생성하는 중입니다.")
@@ -87,7 +98,7 @@ class ReportGenerationJob:
         try:
             result = self._runner(report_date)
         except Exception as exc:  # surfaced to the dashboard instead of a silent failure
-            self._finish(status="failed", message=_safe_error(exc))
+            self._finish(status="failed", message=safe_error(exc))
             return
         message = "리포트를 생성했습니다."
         if result.get("report_status") == "partial":
@@ -105,11 +116,12 @@ class ReportGenerationJob:
                 self._state["model"] = model
 
 
-def _safe_error(exc: Exception) -> str:
+def safe_error(exc: Exception) -> str:
     text = f"{type(exc).__name__}: {exc}".strip()
-    for name in LLM_ENV_VARS:
+    # A PAT must never reach the browser even when a client library echoes it,
+    # whichever variable name it arrived under.
+    for name in PAT_ENV_VARS:
         value = os.getenv(name)
-        # A PAT must never reach the browser even when a client library echoes it.
-        if value and name.endswith("PAT"):
+        if value:
             text = text.replace(value, "***")
-    return text[:MAX_ERROR_CHARS]
+    return gateway_hint(text)[:MAX_ERROR_CHARS]

@@ -6,7 +6,8 @@ const state = {
   reportJob: null,
   reportPollTimer: null,
   selectedReportId: null,
-  estate: { meta: null, result: null, activeTemplate: null, chartType: "line" },
+  estate: { meta: null, result: null, activeTemplate: null, chartType: "line", labels: null },
+  sql: { schema: null, table: "", result: null, saved: [], agent: null },
   paper: null,
   activeTab: "pulse",
   pulseFilter: "all",
@@ -763,6 +764,9 @@ function setActiveTab(tabName) {
     loadEstate().then(() => {
       if (state.estate.result) renderEstateChart();
     });
+  }
+  if (tabName === "sql") {
+    loadSqlWorkbench();
   }
 }
 
@@ -2297,7 +2301,7 @@ function renderEstateMeta() {
       .map(item => `<button type="button" class="estate-template" data-template="${escapeHtml(item.id)}">
         <strong>${escapeHtml(item.name)}</strong>
         <span>${escapeHtml(item.question)}</span>
-        <small>${escapeHtml(item.metric_ids.map(estateMetricName).join(" · "))}</small>
+        <small>${escapeHtml(item.metric_ids.map(estateMetricName).join(" · "))}${item.overlay ? ' <b class="estate-template-overlay">+ 가격 기준선</b>' : ""}</small>
       </button>`)
       .join("");
   }
@@ -2326,6 +2330,19 @@ function renderEstateMeta() {
       .map(value => `<label class="estate-check"><input type="checkbox" name="${dimension}" value="${escapeHtml(value)}" /><span>${escapeHtml(value)}</span></label>`)
       .join("");
   });
+
+  // 기준선 지역·유형은 실제 적재된 값에서 고르게 하고, 비우면 본 차트 필터를 따라가도록 둔다.
+  renderEstateOverlayOptions("#estate-overlay-region", meta.dimensions?.region, "지역 자동");
+  renderEstateOverlayOptions("#estate-overlay-property", meta.dimensions?.property_type, "유형 자동(아파트)");
+}
+
+function renderEstateOverlayOptions(selector, values, autoLabel) {
+  const select = document.querySelector(selector);
+  if (!select) return;
+  const options = [`<option value="">${escapeHtml(autoLabel)}</option>`].concat(
+    (values || []).map(value => `<option value="${escapeHtml(value)}">${escapeHtml(value)}</option>`),
+  );
+  select.innerHTML = options.join("");
 }
 
 function applyEstateTemplate(templateId) {
@@ -2349,7 +2366,16 @@ function applyEstateTemplate(templateId) {
   setEstateValue("#estate-aggregation", template.aggregation || "avg");
   setEstateValue("#estate-chart-type", template.chart || "line");
   setEstateValue("#estate-bucket", template.bucket || "month");
+  applyEstateOverlay(template.overlay);
   runEstateQuery(template.name, template.question);
+}
+
+function applyEstateOverlay(overlay) {
+  const toggle = document.querySelector("#estate-overlay");
+  if (toggle) toggle.checked = Boolean(overlay);
+  setEstateValue("#estate-overlay-metric", overlay?.metric_id || "house_sale_price_index");
+  setEstateValue("#estate-overlay-region", overlay?.region || "");
+  setEstateValue("#estate-overlay-property", overlay?.property_type || "");
 }
 
 function setEstateValue(selector, value) {
@@ -2367,6 +2393,7 @@ function collectEstatePayload() {
   const startDate = document.querySelector("#estate-start")?.value;
   const endDate = document.querySelector("#estate-end")?.value;
   return {
+    overlay: collectEstateOverlay(),
     metric_ids: metricIds,
     series_dimension: document.querySelector("#estate-series")?.value || "region",
     bucket: document.querySelector("#estate-bucket")?.value || "month",
@@ -2376,6 +2403,39 @@ function collectEstatePayload() {
     start_date: startDate || null,
     end_date: endDate || null,
   };
+}
+
+function collectEstateOverlay() {
+  if (!document.querySelector("#estate-overlay")?.checked) return null;
+  return {
+    metric_id: document.querySelector("#estate-overlay-metric")?.value || "house_sale_price_index",
+    region: document.querySelector("#estate-overlay-region")?.value || null,
+    property_type: document.querySelector("#estate-overlay-property")?.value || null,
+  };
+}
+
+function estateOverlayLabel(overlay) {
+  if (!overlay) return "";
+  const metricName = estateMetricName(overlay.metric_id);
+  return overlay.label ? `${overlay.label} ${metricName}` : metricName;
+}
+
+function renderEstateOverlayNote(overlay) {
+  const note = document.querySelector("#estate-overlay-note");
+  if (!note) return;
+  if (!overlay) {
+    note.hidden = true;
+    note.textContent = "";
+    return;
+  }
+  note.hidden = false;
+  const unit = overlay.unit ? ` (${overlay.unit})` : "";
+  // 실거래지수는 계약일 기준이라 최근 구간이 나중에 수정된다. 기준선으로 쓸 때 이 점을 같이 알린다.
+  const caution =
+    overlay.metric_id === "apartment_real_transaction_index"
+      ? " 아파트 매매 계약가격만 담은 지수이고, 신고 지연 때문에 최근 값은 나중에 수정될 수 있습니다."
+      : "";
+  note.textContent = `회색 점선은 같은 기간의 ${estateOverlayLabel(overlay)}${unit} 추이입니다. 왼쪽 회색 축을 읽어 주세요.${caution}`;
 }
 
 async function runEstateQuery(title, caption) {
@@ -2397,6 +2457,8 @@ async function runEstateQuery(title, caption) {
   }
   if (message) message.hidden = true;
   state.estate.result = await response.json();
+  // 기준선 토글만 바꿔 다시 그릴 때 제목·설명을 잃지 않도록 기억해 둔다.
+  state.estate.labels = { title, caption };
   state.estate.chartType = document.querySelector("#estate-chart-type")?.value || "line";
   const heading = document.querySelector("#estate-chart-title");
   const captionNode = document.querySelector("#estate-chart-caption");
@@ -2452,16 +2514,20 @@ function renderEstateChart() {
     context.font = "15px sans-serif";
     context.fillText("조건에 맞는 데이터가 없습니다", 24, 44);
     renderEstateLegend([]);
+    renderEstateOverlayNote(null);
     return;
   }
 
+  const overlay = estateOverlayPoints(result);
+  renderEstateOverlayNote(overlay);
   const values = series.flatMap(item => item.points).filter(value => value !== null && value !== undefined).map(Number);
   const rawMin = Math.min(...values), rawMax = Math.max(...values);
   const includeZero = state.estate.chartType === "bar" || rawMin > 0 && rawMin < rawMax * 0.2;
   const lowBase = includeZero ? Math.min(0, rawMin) : rawMin;
   const pad = Math.max((rawMax - lowBase) * 0.08, Math.abs(rawMax || 1) * 0.004);
   const min = lowBase - (includeZero ? 0 : pad), max = rawMax + pad, span = max - min || 1;
-  const box = { left: 16, top: 18, right: cssWidth - 96, bottom: cssHeight - 40 };
+  // 기준선은 단위가 달라 왼쪽에 자기 축을 세운다. 기준선이 없으면 예전처럼 왼쪽 여백을 좁게 둔다.
+  const box = { left: overlay ? 62 : 16, top: 18, right: cssWidth - 96, bottom: cssHeight - 40 };
   const xFor = index => box.left + (index / Math.max(buckets.length - 1, 1)) * (box.right - box.left);
   const yFor = value => box.top + (1 - (value - min) / span) * (box.bottom - box.top);
 
@@ -2484,6 +2550,9 @@ function renderEstateChart() {
     context.fillStyle = "#5d6f68";
     context.fillText(bucket.slice(2, 7), Math.min(x - 17, box.right - 32), box.bottom + 20);
   });
+
+  // 지표 선보다 먼저 그려 배경처럼 깔린다.
+  if (overlay) drawEstateOverlay(context, overlay, box, xFor);
 
   const chartType = state.estate.chartType;
   series.forEach((item, seriesIndex) => {
@@ -2531,7 +2600,54 @@ function renderEstateChart() {
     context.stroke();
   });
 
-  renderEstateLegend(series);
+  renderEstateLegend(series, overlay);
+}
+
+const ESTATE_OVERLAY_COLOR = "#8c9c95";
+
+function estateOverlayPoints(result) {
+  const overlay = result.overlay;
+  if (!overlay) return null;
+  const points = (overlay.points || []).map(point => (point === null || point === undefined ? null : Number(point)));
+  return points.some(point => point !== null) ? { ...overlay, points } : null;
+}
+
+function drawEstateOverlay(context, overlay, box, xFor) {
+  const values = overlay.points.filter(point => point !== null);
+  const rawMin = Math.min(...values), rawMax = Math.max(...values);
+  const pad = Math.max((rawMax - rawMin) * 0.12, Math.abs(rawMax || 1) * 0.004);
+  const min = rawMin - pad, span = rawMax + pad - min || 1;
+  const yFor = value => box.top + (1 - (value - min) / span) * (box.bottom - box.top);
+
+  context.save();
+  context.strokeStyle = ESTATE_OVERLAY_COLOR;
+  context.lineWidth = 1.6;
+  context.setLineDash([5, 4]);
+  context.beginPath();
+  let started = false;
+  overlay.points.forEach((point, index) => {
+    if (point === null) return;
+    const x = xFor(index), y = yFor(point);
+    if (!started) { context.moveTo(x, y); started = true; } else context.lineTo(x, y);
+  });
+  context.stroke();
+  context.restore();
+
+  // 왼쪽 축은 기준선 전용이므로 눈금 색도 점선과 맞춘다.
+  context.save();
+  context.fillStyle = ESTATE_OVERLAY_COLOR;
+  context.font = "12px ui-monospace, SFMono-Regular, Menlo, monospace";
+  context.textAlign = "right";
+  for (let index = 0; index <= 5; index += 1) {
+    const value = rawMax + pad - (index / 5) * span;
+    context.fillText(estateOverlayAxisValue(value), box.left - 10, box.top + (index / 5) * (box.bottom - box.top) + 4);
+  }
+  context.restore();
+}
+
+function estateOverlayAxisValue(value) {
+  if (Math.abs(value) >= 1000) return new Intl.NumberFormat("en-US", { maximumFractionDigits: 0 }).format(value);
+  return new Intl.NumberFormat("en-US", { minimumFractionDigits: 1, maximumFractionDigits: 1 }).format(value);
 }
 
 function estateAxisValue(value) {
@@ -2541,16 +2657,21 @@ function estateAxisValue(value) {
   return new Intl.NumberFormat("en-US", { minimumFractionDigits: 1, maximumFractionDigits: 2 }).format(value);
 }
 
-function renderEstateLegend(series) {
+function renderEstateLegend(series, overlay) {
   const legend = document.querySelector("#estate-legend");
   if (!legend) return;
-  legend.innerHTML = series
-    .map((item, index) => {
-      const color = ESTATE_SERIES_COLORS[index % ESTATE_SERIES_COLORS.length];
-      const last = [...item.points].reverse().find(point => point !== null && point !== undefined);
-      return `<span class="estate-legend-item"><i style="background:${color}"></i>${escapeHtml(estateSeriesLabel(item.name))}<em>${last === undefined ? "-" : estateAxisValue(Number(last))}</em></span>`;
-    })
-    .join("");
+  const items = series.map((item, index) => {
+    const color = ESTATE_SERIES_COLORS[index % ESTATE_SERIES_COLORS.length];
+    const last = [...item.points].reverse().find(point => point !== null && point !== undefined);
+    return `<span class="estate-legend-item"><i style="background:${color}"></i>${escapeHtml(estateSeriesLabel(item.name))}<em>${last === undefined ? "-" : estateAxisValue(Number(last))}</em></span>`;
+  });
+  if (overlay) {
+    const last = [...overlay.points].reverse().find(point => point !== null);
+    items.push(
+      `<span class="estate-legend-item estate-legend-overlay"><i class="dashed"></i>${escapeHtml(estateOverlayLabel(overlay))}<em>${last === undefined ? "-" : estateOverlayAxisValue(last)}</em></span>`,
+    );
+  }
+  legend.innerHTML = items.join("");
 }
 
 function renderEstateTable() {
@@ -2577,7 +2698,16 @@ function renderEstateTable() {
       return `<tr><td>${escapeHtml(estateSeriesLabel(item.name))}</td>${cells}</tr>`;
     })
     .join("");
-  table.innerHTML = `${head}<tbody>${body}</tbody>`;
+  const overlay = estateOverlayPoints(result);
+  const overlayRow = overlay
+    ? `<tr class="estate-overlay-row"><td>${escapeHtml(estateOverlayLabel(overlay))}</td>${tail
+        .map((_, index) => {
+          const point = overlay.points[offset + index];
+          return `<td>${point === null || point === undefined ? "-" : estateOverlayAxisValue(point)}</td>`;
+        })
+        .join("")}</tr>`
+    : "";
+  table.innerHTML = `${head}<tbody>${body}${overlayRow}</tbody>`;
 }
 
 document.querySelector("#estate-templates")?.addEventListener("click", event => {
@@ -2590,9 +2720,16 @@ document.querySelector("#estate-form")?.addEventListener("submit", event => {
   document.querySelectorAll("[data-template]").forEach(button => button.classList.remove("active"));
   runEstateQuery();
 });
+["#estate-overlay", "#estate-overlay-metric", "#estate-overlay-region", "#estate-overlay-property"].forEach(selector => {
+  document.querySelector(selector)?.addEventListener("change", () => {
+    if (!state.estate.result) return;
+    runEstateQuery(state.estate.labels?.title, state.estate.labels?.caption);
+  });
+});
 document.querySelector("#estate-reset")?.addEventListener("click", () => {
   document.querySelectorAll("#estate-form input[type=checkbox]").forEach(input => { input.checked = false; });
   ["#estate-start", "#estate-end"].forEach(selector => setEstateValue(selector, ""));
+  applyEstateOverlay(null);
   setEstateValue("#estate-series", "region");
   setEstateValue("#estate-bucket", "month");
   setEstateValue("#estate-aggregation", "avg");
@@ -2601,4 +2738,440 @@ document.querySelector("#estate-reset")?.addEventListener("click", () => {
 });
 window.addEventListener("resize", () => {
   if (state.activeTab === "estate" && state.estate.result) renderEstateChart();
+});
+
+// ---------------------------------------------------------------------------
+// SQL 워크벤치: 스키마 탐색 · 골격 쿼리 · 자연어 → SQL · 읽기 전용 실행
+// ---------------------------------------------------------------------------
+const SQL_ROLE_LABELS = { dimension: "차원", fact: "팩트", time: "시간축", meta: "적재 메타" };
+const SQL_BUCKETS = { month: "toStartOfMonth", quarter: "toStartOfQuarter", year: "toStartOfYear" };
+
+async function loadSqlWorkbench() {
+  if (state.sql.schema) return;
+  const response = await fetch("/api/sql/schema");
+  if (!response.ok) {
+    showSqlMessage("스키마를 읽지 못했습니다. ClickHouse 연결을 확인해 주세요.");
+    return;
+  }
+  state.sql.schema = await response.json();
+  renderSqlSchema();
+  loadSavedSqlQueries();
+}
+
+function sqlTables() {
+  return state.sql.schema?.tables || [];
+}
+
+function sqlActiveTable() {
+  const tables = sqlTables();
+  return tables.find(item => item.table === state.sql.table) || tables[0] || null;
+}
+
+function renderSqlSchema() {
+  const schema = state.sql.schema;
+  if (!schema) return;
+  const coverage = document.querySelector("#sql-coverage");
+  if (coverage) {
+    coverage.textContent = `${schema.database} 스키마 · 테이블 ${sqlTables().length}개 · 최대 ${formatNumber(schema.max_rows)}행 · 읽기 전용`;
+  }
+  const llm = document.querySelector("#sql-llm-state");
+  if (llm) {
+    llm.textContent = schema.llm?.configured ? `자연어 변환: ${schema.llm.model}` : "자연어 변환 비활성 (LLM 설정 없음)";
+  }
+  const question = document.querySelector("#sql-question");
+  const translate = document.querySelector("#sql-translate");
+  if (question && translate && !schema.llm?.configured) {
+    question.disabled = translate.disabled = true;
+    question.placeholder = "CLUEFIN_LLM_PAT / BASE_URL / MODEL을 설정하면 자연어로 물어볼 수 있습니다.";
+  }
+
+  const select = document.querySelector("#sql-table");
+  if (select) {
+    // 부동산 원본 테이블을 맨 위로 올려 바로 만지게 한다.
+    const ordered = [...sqlTables()].sort((a, b) => {
+      const weight = name => (name.startsWith("real_estate") ? 0 : 1);
+      return weight(a.table) - weight(b.table) || a.table.localeCompare(b.table);
+    });
+    select.innerHTML = ordered
+      .map(item => `<option value="${escapeHtml(item.table)}">${escapeHtml(item.table)} (${formatNumber(item.total_rows)}행)</option>`)
+      .join("");
+    state.sql.table = state.sql.table || ordered[0]?.table || "";
+    select.value = state.sql.table;
+  }
+  renderSqlColumns();
+}
+
+function renderSqlColumns() {
+  const table = sqlActiveTable();
+  if (!table) return;
+  state.sql.table = table.table;
+  const meta = document.querySelector("#sql-table-meta");
+  if (meta) {
+    const parts = [`engine ${table.engine}`, `${formatNumber(table.total_rows)}행`];
+    if (table.sorting_key) parts.push(`ORDER BY (${table.sorting_key})`);
+    if (table.period) parts.push(`${table.period.column} ${table.period.first} ~ ${table.period.last}`);
+    meta.textContent = parts.join(" · ");
+  }
+  const groups = { dimension: "#sql-dimensions", fact: "#sql-facts", time: "#sql-times" };
+  Object.entries(groups).forEach(([role, selector]) => {
+    const host = document.querySelector(selector);
+    if (!host) return;
+    const columns = table.columns.filter(column => column.role === role);
+    if (!columns.length) {
+      host.innerHTML = `<span class="sql-empty">없음</span>`;
+      return;
+    }
+    host.innerHTML = columns
+      .map(column => {
+        const checked = sqlDefaultChecked(table, column) ? " checked" : "";
+        return `<label class="estate-check" title="${escapeHtml(column.type)}${column.comment ? ` · ${escapeHtml(column.comment)}` : ""}">
+          <input type="checkbox" data-sql-role="${role}" value="${escapeHtml(column.name)}"${checked} />
+          <span>${escapeHtml(column.name)}</span><small>${escapeHtml(sqlShortType(column.type))}</small>
+        </label>`;
+      })
+      .join("");
+  });
+  renderSqlValues(table);
+}
+
+function sqlDefaultChecked(table, column) {
+  if (column.role === "time") return Boolean(table.period && table.period.column === column.name);
+  if (column.role === "fact") return true;
+  return Boolean((table.samples || {})[column.name]);
+}
+
+function sqlShortType(type) {
+  return type.replace("LowCardinality(", "").replace(/\)$/, "").replace("Nullable(", "");
+}
+
+function renderSqlValues(table) {
+  const host = document.querySelector("#sql-values");
+  if (!host) return;
+  const samples = Object.entries(table.samples || {});
+  const catalog = table.catalog || [];
+  if (!samples.length && !catalog.length) {
+    host.innerHTML = "";
+    return;
+  }
+  const sampleHtml = samples
+    .map(([column, values]) => `<div class="sql-value-row"><strong>${escapeHtml(column)}</strong>${values
+      .map(value => `<button type="button" class="sql-chip" data-sql-value="${escapeHtml(column)}" data-sql-literal="${escapeHtml(value)}">${escapeHtml(value)}</button>`)
+      .join("")}</div>`)
+    .join("");
+  const catalogHtml = catalog.length
+    ? `<div class="sql-value-row"><strong>코드 → 이름</strong>${catalog
+        .map(item => `<button type="button" class="sql-chip" data-sql-literal="${escapeHtml(item.key)}" title="${escapeHtml(item.label)}">${escapeHtml(item.key)} · ${escapeHtml(item.label)}</button>`)
+        .join("")}</div>`
+    : "";
+  host.innerHTML = `<h3>실제 값</h3>${sampleHtml}${catalogHtml}`;
+}
+
+function sqlCheckedColumns(role) {
+  return [...document.querySelectorAll(`[data-sql-role="${role}"]:checked`)].map(input => input.value);
+}
+
+function buildSqlSkeleton() {
+  const table = sqlActiveTable();
+  if (!table) return "";
+  const dimensions = sqlCheckedColumns("dimension");
+  const facts = sqlCheckedColumns("fact");
+  const times = sqlCheckedColumns("time");
+  const aggregation = document.querySelector("#sql-aggregation")?.value || "avg";
+  const bucket = document.querySelector("#sql-bucket")?.value || "";
+  const timeColumn = times[0] || table.period?.column || "";
+  const groupBy = [];
+  const select = [];
+
+  if (timeColumn) {
+    const expression = bucket && SQL_BUCKETS[bucket] ? `${SQL_BUCKETS[bucket]}(${timeColumn})` : timeColumn;
+    select.push(`${expression} AS ${sqlIdentifier("기간")}`);
+    groupBy.push(sqlIdentifier("기간"));
+  }
+  dimensions.forEach(column => {
+    select.push(column);
+    groupBy.push(column);
+  });
+  if (aggregation === "count") {
+    select.push(`count() AS ${sqlIdentifier("행수")}`);
+  } else {
+    facts.forEach(column => select.push(`round(${aggregation}(${column}), 2) AS ${aggregation}_${column}`));
+  }
+  // 아무것도 안 골랐으면 원본을 그대로 훑어보는 쿼리가 제일 쓸모 있다.
+  if (!dimensions.length && !facts.length && aggregation !== "count") {
+    const order = timeColumn ? `\nORDER BY ${timeColumn} DESC` : "";
+    return `SELECT *\nFROM ${state.sql.schema.database}.${table.table} FINAL${order}\nLIMIT 200`;
+  }
+
+  const lines = [`SELECT ${select.join(",\n       ")}`, `FROM ${state.sql.schema.database}.${table.table} FINAL`];
+  if (timeColumn && table.period) {
+    lines.push(`WHERE ${timeColumn} >= '${sqlDefaultStart(table.period.last)}'`);
+  }
+  if (groupBy.length && (aggregation === "count" || facts.length)) {
+    lines.push(`GROUP BY ${groupBy.join(", ")}`);
+    lines.push(`ORDER BY ${groupBy.join(", ")}`);
+  } else {
+    lines.push(`ORDER BY ${(timeColumn ? [sqlIdentifier("기간")] : groupBy).join(", ")} DESC`);
+  }
+  lines.push("LIMIT 500");
+  return lines.join("\n");
+}
+
+function sqlIdentifier(name) {
+  // ClickHouse는 따옴표 없는 한글 식별자를 문법 오류로 본다. ASCII가 아니면 backtick으로 감싼다.
+  return /^[A-Za-z_][A-Za-z0-9_]*$/.test(name) ? name : `\`${name.replace(/`/g, "")}\``;
+}
+
+function sqlDefaultStart(lastPeriod) {
+  // 골격 쿼리는 최근 2년만 본다. 전체 스캔을 기본값으로 주지 않는다.
+  // Date 연산은 UTC 변환에서 하루가 밀리므로 문자열에서 연도만 내린다.
+  const parts = /^(\d{4})-(\d{2})-(\d{2})/.exec(lastPeriod || "");
+  if (!parts) return "2024-01-01";
+  return `${Number(parts[1]) - 2}-${parts[2]}-01`;
+}
+
+function setSqlText(sql) {
+  const editor = document.querySelector("#sql-text");
+  if (editor) editor.value = sql;
+}
+
+function showSqlMessage(text, tone = "error") {
+  const message = document.querySelector("#sql-message");
+  if (!message) return;
+  message.hidden = !text;
+  message.textContent = text || "";
+  message.classList.toggle("sql-message-ok", tone === "ok");
+}
+
+function renderSqlAgentNote(result) {
+  const note = document.querySelector("#sql-agent-note");
+  if (!note) return;
+  if (!result) {
+    note.hidden = true;
+    note.innerHTML = "";
+    return;
+  }
+  const notes = (result.notes || []).map(item => `<li>${escapeHtml(item)}</li>`).join("");
+  const attempts = result.attempts > 1 ? ` · ${result.attempts}회 시도` : "";
+  const status = result.status === "validated" ? "검증 통과" : "검증 실패";
+  note.hidden = false;
+  note.innerHTML = `<strong>${escapeHtml(result.explanation || "SQL을 만들었습니다.")}</strong>
+    <span>${status}${attempts} · ${escapeHtml(result.model || "")}</span>
+    ${notes ? `<ul>${notes}</ul>` : ""}
+    ${result.error ? `<em>${escapeHtml(result.error)}</em>` : ""}`;
+}
+
+async function translateSqlQuestion() {
+  const question = document.querySelector("#sql-question")?.value?.trim();
+  if (!question) {
+    showSqlMessage("무엇을 보고 싶은지 한 줄로 적어 주세요.");
+    return;
+  }
+  const button = document.querySelector("#sql-translate");
+  if (button) {
+    button.disabled = true;
+    button.textContent = "만드는 중…";
+  }
+  showSqlMessage("");
+  try {
+    const response = await fetch("/api/sql/translate", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ question }),
+    });
+    const payload = await response.json().catch(() => ({}));
+    if (!response.ok) {
+      showSqlMessage(payload.detail || "SQL을 만들지 못했습니다.");
+      renderSqlAgentNote(null);
+      return;
+    }
+    state.sql.agent = payload;
+    renderSqlAgentNote(payload);
+    if (payload.sql) setSqlText(payload.sql);
+    const nameInput = document.querySelector("#sql-save-name");
+    if (nameInput && !nameInput.value) nameInput.value = question.slice(0, 60);
+    if (payload.status === "validated") await runSqlQuery();
+  } finally {
+    if (button) {
+      button.disabled = false;
+      button.textContent = "SQL 만들기";
+    }
+  }
+}
+
+async function runSqlQuery() {
+  const sql = document.querySelector("#sql-text")?.value?.trim();
+  if (!sql) {
+    showSqlMessage("실행할 SQL이 없습니다.");
+    return;
+  }
+  const button = document.querySelector("#sql-run");
+  if (button) button.disabled = true;
+  try {
+    const response = await fetch("/api/sql/run", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ sql }),
+    });
+    const payload = await response.json().catch(() => ({}));
+    if (!response.ok) {
+      showSqlMessage(payload.detail || "쿼리를 실행하지 못했습니다.");
+      return;
+    }
+    showSqlMessage("");
+    state.sql.result = payload;
+    renderSqlResult();
+  } finally {
+    if (button) button.disabled = false;
+  }
+}
+
+function renderSqlResult() {
+  const result = state.sql.result;
+  const table = document.querySelector("#sql-result");
+  const meta = document.querySelector("#sql-result-meta");
+  if (!table || !result) return;
+  if (meta) {
+    const truncated = result.truncated ? ` · 상한에서 잘림(${formatNumber(result.row_count)}행까지)` : "";
+    meta.textContent = `${formatNumber(result.row_count)}행 · ${result.elapsed_ms}ms · ${result.columns.length}열${truncated}`;
+  }
+  if (!result.columns.length) {
+    table.innerHTML = "";
+    return;
+  }
+  const head = `<thead><tr>${result.columns.map(column => `<th>${escapeHtml(column)}</th>`).join("")}</tr></thead>`;
+  const body = result.rows
+    .map(row => `<tr>${row.map(value => `<td>${value === null || value === undefined ? "-" : escapeHtml(String(value))}</td>`).join("")}</tr>`)
+    .join("");
+  table.innerHTML = `${head}<tbody>${body}</tbody>`;
+}
+
+async function loadSavedSqlQueries() {
+  const response = await fetch("/api/sql/saved");
+  if (!response.ok) return;
+  state.sql.saved = await response.json();
+  renderSavedSqlQueries();
+}
+
+function renderSavedSqlQueries() {
+  const host = document.querySelector("#sql-saved");
+  if (!host) return;
+  const saved = state.sql.saved || [];
+  if (!saved.length) {
+    host.innerHTML = `<h3>저장한 쿼리</h3><p class="sql-empty">아직 없습니다. 이름을 적고 저장하면 여기에 남습니다.</p>`;
+    return;
+  }
+  host.innerHTML = `<h3>저장한 쿼리</h3>${saved
+    .map(item => `<div class="sql-saved-item">
+      <button type="button" class="sql-saved-load" data-sql-load="${escapeHtml(item.name)}">
+        <strong>${escapeHtml(item.name)}</strong><span>${escapeHtml(item.question || item.sql.slice(0, 70))}</span>
+      </button>
+      <button type="button" class="sql-saved-delete" data-sql-delete="${escapeHtml(item.name)}" aria-label="${escapeHtml(item.name)} 삭제">×</button>
+    </div>`)
+    .join("")}`;
+}
+
+async function saveSqlQuery() {
+  const name = document.querySelector("#sql-save-name")?.value?.trim();
+  const sql = document.querySelector("#sql-text")?.value?.trim();
+  const response = await fetch("/api/sql/saved", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      name,
+      sql,
+      question: document.querySelector("#sql-question")?.value?.trim() || "",
+      source: state.sql.agent?.sql === sql ? "nl2sql" : "manual",
+    }),
+  });
+  const payload = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    showSqlMessage(payload.detail || "쿼리를 저장하지 못했습니다.");
+    return;
+  }
+  showSqlMessage(`'${payload.name}' 쿼리를 저장했습니다.`, "ok");
+  await loadSavedSqlQueries();
+}
+
+function copySqlResult() {
+  const result = state.sql.result;
+  if (!result || !result.columns.length) {
+    showSqlMessage("복사할 결과가 없습니다.");
+    return;
+  }
+  const escapeCell = value => {
+    const text = value === null || value === undefined ? "" : String(value);
+    return /[",\n]/.test(text) ? `"${text.replace(/"/g, '""')}"` : text;
+  };
+  const csv = [result.columns.join(","), ...result.rows.map(row => row.map(escapeCell).join(","))].join("\n");
+  navigator.clipboard?.writeText(csv).then(
+    () => showSqlMessage(`${formatNumber(result.row_count)}행을 CSV로 복사했습니다.`, "ok"),
+    () => showSqlMessage("클립보드에 복사하지 못했습니다."),
+  );
+}
+
+document.querySelector("#sql-table")?.addEventListener("change", event => {
+  state.sql.table = event.target.value;
+  renderSqlColumns();
+});
+document.querySelector("#sql-skeleton")?.addEventListener("click", () => {
+  const skeleton = buildSqlSkeleton();
+  if (!skeleton) {
+    showSqlMessage("컬럼을 최소 하나 골라 주세요.");
+    return;
+  }
+  showSqlMessage("");
+  renderSqlAgentNote(null);
+  setSqlText(skeleton);
+});
+document.querySelector("#sql-values")?.addEventListener("click", event => {
+  const chip = event.target.closest("[data-sql-literal]");
+  if (!chip) return;
+  const column = chip.dataset.sqlValue;
+  const literal = `'${chip.dataset.sqlLiteral.replace(/'/g, "''")}'`;
+  const editor = document.querySelector("#sql-text");
+  if (!editor) return;
+  // 커서 위치에 값을 끼워 넣어 WHERE 절을 손으로 채우는 수고를 덜어 준다.
+  const insert = column ? `${column} = ${literal}` : literal;
+  const start = editor.selectionStart ?? editor.value.length;
+  editor.value = `${editor.value.slice(0, start)}${insert}${editor.value.slice(editor.selectionEnd ?? start)}`;
+  editor.focus();
+  editor.selectionStart = editor.selectionEnd = start + insert.length;
+});
+document.querySelector("#sql-nl-form")?.addEventListener("submit", event => {
+  event.preventDefault();
+  translateSqlQuestion();
+});
+document.querySelector("#sql-run")?.addEventListener("click", () => runSqlQuery());
+document.querySelector("#sql-save")?.addEventListener("click", () => saveSqlQuery());
+document.querySelector("#sql-copy")?.addEventListener("click", () => copySqlResult());
+document.querySelector("#sql-text")?.addEventListener("keydown", event => {
+  if ((event.ctrlKey || event.metaKey) && event.key === "Enter") {
+    event.preventDefault();
+    runSqlQuery();
+  }
+});
+document.querySelector("#sql-saved")?.addEventListener("click", async event => {
+  const load = event.target.closest("[data-sql-load]");
+  if (load) {
+    const item = (state.sql.saved || []).find(entry => entry.name === load.dataset.sqlLoad);
+    if (item) {
+      setSqlText(item.sql);
+      const nameInput = document.querySelector("#sql-save-name");
+      if (nameInput) nameInput.value = item.name;
+      const question = document.querySelector("#sql-question");
+      if (question && !question.disabled) question.value = item.question || "";
+      renderSqlAgentNote(null);
+      runSqlQuery();
+    }
+    return;
+  }
+  const remove = event.target.closest("[data-sql-delete]");
+  if (!remove) return;
+  const response = await fetch(`/api/sql/saved/${encodeURIComponent(remove.dataset.sqlDelete)}`, { method: "DELETE" });
+  if (!response.ok) {
+    showSqlMessage("쿼리를 삭제하지 못했습니다.");
+    return;
+  }
+  state.sql.saved = (state.sql.saved || []).filter(item => item.name !== remove.dataset.sqlDelete);
+  renderSavedSqlQueries();
 });

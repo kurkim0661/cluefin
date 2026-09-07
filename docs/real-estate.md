@@ -59,6 +59,7 @@ coverage, and the built-in templates.
   "aggregation": "avg",
   "transform": "ratio",
   "filters": {"region": ["서울", "경기"], "property_type": ["아파트"]},
+  "overlay": {"region": "수도권", "property_type": "아파트"},
   "start_date": "2025-01-01",
   "end_date": "2026-08-31"
 }
@@ -71,6 +72,37 @@ coverage, and the built-in templates.
   and divides the first by the second)
 
 Filter values are bound as query parameters, never string-interpolated.
+
+### Price overlay
+
+A supply or rate chart answers "how much" but not "what were prices doing then", so a query may
+ask for a **price baseline** drawn behind the series. `overlay` accepts `true` (region taken from
+the first `filters.region` value, property type defaults to 아파트) or an explicit
+`{metric_id, region, property_type}`; `metric_id` must be one of `house_sale_price_index`,
+`house_sale_price_index_long`, `apartment_real_transaction_index`.
+
+The response gains `overlay: {metric_id, region, property_type, label, unit, points}` with
+`points` aligned to the same `buckets` — or `null` when the baseline has no data in that window.
+It is always averaged (never summed) and always the raw level, regardless of the main query's
+`aggregation`/`transform`, and the chart reads it off its own left axis. Templates whose chart
+already shows the price level (`transform: raw` on a price index) omit `overlay`; the rest carry
+one, choosing the metric whose coverage spans the template's window — `*_long` for ten-year
+views, 실거래지수 for the supply series that reach back before the 2021-06 rebase.
+
+## Raw tables in the SQL workbench
+
+The chart tab pivots a fixed shape. To reach the raw fact table — pick your own dimension and
+fact columns, aggregate them your way, join the metric catalog — use the **SQL 워크벤치** tab or
+`cluefin-agent nl2sql`. See `docs/sql-workbench.md`. The observation table's roles are:
+
+- **time**: `period` (the observation month), `week_start` (pre-bucketed Monday)
+- **dimension**: `metric_id`, `region`, `region_tier`, `property_type`, `deal_type`, `frequency`,
+  `unit`, `provider`
+- **fact**: `value` — the only measure; its meaning comes from `unit` (index, 호, %)
+- **load metadata** (hidden by default): `metadata_json`, `run_id`, `collected_at`
+
+`value` mixes units across metrics, so always filter `metric_id` before aggregating, and never
+`SUM` an index. Join `market.real_estate_metrics` on `metric_id` for Korean names and units.
 
 ## Verification
 

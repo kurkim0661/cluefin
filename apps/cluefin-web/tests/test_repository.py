@@ -548,6 +548,138 @@ def test_real_estate_query_rejects_unknown_options() -> None:
         {"metric_ids": ["m"], "series_dimension": "unknown"},
         {"metric_ids": ["m"], "transform": "unknown"},
         {"metric_ids": ["m"], "transform": "ratio"},
+        {"metric_ids": ["m"], "overlay": {"metric_id": "unsold_housing"}},
     ):
         with pytest.raises(ValueError):
             repository.real_estate_query(payload)
+
+
+class FakeQueuedEstateClient:
+    """질의 순서대로 다른 응답을 돌려준다. 본 차트와 기준선 질의를 구분하기 위해 쓴다."""
+
+    def __init__(self, responses: list[tuple[list[tuple], list[str]]]) -> None:
+        self.responses = responses
+        self.calls: list[tuple[str, dict | None]] = []
+
+    def query(self, sql: str, parameters: dict | None = None) -> FakeQueryResult:
+        self.calls.append((sql, parameters))
+        rows, columns = self.responses[min(len(self.calls) - 1, len(self.responses) - 1)]
+        return FakeQueryResult(list(rows), list(columns))
+
+
+def _overlay_repository(main_rows, overlay_rows):
+    client = FakeQueuedEstateClient(
+        [
+            (main_rows, ["bucket", "series", "value", "unit"]),
+            (overlay_rows, ["bucket", "value", "unit"]),
+        ]
+    )
+    return DashboardRepository(client), client
+
+
+def test_real_estate_query_overlays_price_index_on_the_same_buckets() -> None:
+    repository, client = _overlay_repository(
+        [
+            ("2026-05-01", "수도권", 1200.0, "호"),
+            ("2026-06-01", "수도권", 1500.0, "호"),
+        ],
+        [
+            ("2026-04-01", 99.0, "2026.01=100"),
+            ("2026-05-01", 101.2, "2026.01=100"),
+            ("2026-06-01", 102.5, "2026.01=100"),
+        ],
+    )
+
+    result = repository.real_estate_query(
+        {
+            "metric_ids": ["unsold_housing"],
+            "series_dimension": "region",
+            "bucket": "month",
+            "filters": {"region": ["수도권"]},
+            "overlay": {"region": "수도권", "property_type": "아파트"},
+        }
+    )
+
+    overlay = result["overlay"]
+    assert overlay["metric_id"] == "house_sale_price_index"
+    assert overlay["label"] == "수도권 아파트"
+    assert overlay["unit"] == "2026.01=100"
+    # 본 차트 구간(2026-05·06)만 남고 앞선 관측은 잘린다.
+    assert overlay["points"] == [101.2, 102.5]
+    overlay_sql, overlay_parameters = client.calls[-1]
+    assert "avg(value)" in overlay_sql
+    assert overlay_parameters["o_metric"] == "house_sale_price_index"
+    assert overlay_parameters["o_region"] == "수도권"
+    assert overlay_parameters["o_property_type"] == "아파트"
+    assert overlay_parameters["o_start"] == "2026-05-01"
+
+
+def test_real_estate_overlay_defaults_region_to_first_filter_and_can_be_omitted() -> None:
+    repository, client = _overlay_repository(
+        [("2026-06-01", "경기", 3.0, "%")],
+        [("2026-06-01", 98.4, "2026.01=100")],
+    )
+
+    result = repository.real_estate_query(
+        {
+            "metric_ids": ["land_price_change"],
+            "series_dimension": "region",
+            "bucket": "month",
+            "filters": {"region": ["경기", "인천"]},
+            "overlay": True,
+        }
+    )
+
+    assert result["overlay"]["region"] == "경기"
+    assert result["overlay"]["property_type"] == "아파트"
+    assert client.calls[-1][1]["o_region"] == "경기"
+
+    # 주택유형을 나누지 않는 지표("전체")는 이름에 유형을 붙이지 않는다.
+    repository, _ = _overlay_repository([("2026-06-01", "서울", 3.0, "%")], [("2026-06-01", 158.4, "2017.11=100")])
+    all_types = repository.real_estate_query(
+        {
+            "metric_ids": ["land_price_change"],
+            "series_dimension": "region",
+            "bucket": "month",
+            "overlay": {"metric_id": "apartment_real_transaction_index", "region": "수도권", "property_type": "전체"},
+        }
+    )
+    assert all_types["overlay"]["label"] == "수도권"
+
+    repository, client = _overlay_repository([("2026-06-01", "경기", 3.0, "%")], [])
+    plain = repository.real_estate_query(
+        {"metric_ids": ["land_price_change"], "series_dimension": "region", "bucket": "month"}
+    )
+
+    assert plain["overlay"] is None
+    assert len(client.calls) == 1
+
+
+def test_real_estate_overlay_is_dropped_when_no_price_data_overlaps() -> None:
+    repository, _ = _overlay_repository(
+        [("2026-06-01", "서울", 120.0, "호")],
+        [("2026-06-01", None, "2026.01=100")],
+    )
+
+    result = repository.real_estate_query(
+        {"metric_ids": ["unsold_housing"], "series_dimension": "region", "bucket": "month", "overlay": True}
+    )
+
+    assert result["overlay"] is None
+
+
+def test_real_estate_templates_overlay_price_index_when_level_is_not_visible() -> None:
+    from cluefin_web.repository import REAL_ESTATE_OVERLAY_METRICS, REAL_ESTATE_TEMPLATES
+
+    by_id = {template["id"]: template for template in REAL_ESTATE_TEMPLATES}
+    assert by_id["unsold_inventory"]["overlay"]["region"] == "수도권"
+    assert by_id["unsold_inventory"]["overlay"]["metric_id"] == "apartment_real_transaction_index"
+    assert by_id["long_run_cycle"]["overlay"]["metric_id"] == "house_sale_price_index_long"
+    # 원값 지수 템플릿은 이미 가격 수준을 그리므로 기준선을 겹치지 않는다.
+    assert "overlay" not in by_id["capital_sale_index"]
+    for template in REAL_ESTATE_TEMPLATES:
+        overlay = template.get("overlay")
+        if overlay and overlay.get("metric_id"):
+            assert overlay["metric_id"] in REAL_ESTATE_OVERLAY_METRICS
+        if template["transform"] != "raw":
+            assert overlay, f"{template['id']} 템플릿에 가격 기준선이 없습니다"

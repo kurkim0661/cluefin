@@ -6,6 +6,8 @@ The [daily research agent](docs/daily-research-agent.md) uses LangChain and Lang
 
 [Capital-area real estate](docs/real-estate.md) is stored as a pivotable fact table, so the dashboard's 부동산 tab lets you pick the metric and the dimension instead of offering fixed charts.
 
+When a fixed shape is not enough, the [SQL workbench and NL→SQL agent](docs/sql-workbench.md) expose the raw tables: pick dimension and fact columns yourself, or ask in Korean and get a validated read-only query back.
+
 [![Codacy Badge](https://app.codacy.com/project/badge/Grade/92b750be06a24d88869fbe83fb4f4cf4)](https://app.codacy.com/gh/kgcrom/cluefin/dashboard?utm_source=gh&utm_medium=referral&utm_content=&utm_campaign=Badge_grade)
 [![Codacy Badge](https://app.codacy.com/project/badge/Coverage/92b750be06a24d88869fbe83fb4f4cf4)](https://app.codacy.com/gh/kgcrom/cluefin/dashboard?utm_source=gh&utm_medium=referral&utm_content=&utm_campaign=Badge_coverage)
 [![CI Pipeline](https://github.com/kgcrom/cluefin/actions/workflows/ci.yml/badge.svg)](https://github.com/kgcrom/cluefin/actions/workflows/ci.yml)

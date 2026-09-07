@@ -2,14 +2,17 @@ from __future__ import annotations
 
 from datetime import date
 from pathlib import Path
+from typing import Callable
 
 import uvicorn
+from cluefin_store.env import load_env_file
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import HTMLResponse
 from fastapi.staticfiles import StaticFiles
 
-from cluefin_web.report_jobs import ReportGenerationJob
+from cluefin_web.report_jobs import ReportGenerationJob, llm_settings_state
 from cluefin_web.repository import DashboardRepository
+from cluefin_web.sql_console import translate_question_to_sql
 
 PACKAGE_DIR = Path(__file__).parent
 
@@ -17,11 +20,17 @@ PACKAGE_DIR = Path(__file__).parent
 def create_app(
     repository: DashboardRepository | None = None,
     report_job: ReportGenerationJob | None = None,
+    sql_translator: Callable[..., dict] | None = None,
+    load_env: bool = True,
 ) -> FastAPI:
+    # CLUEFIN_LLM_* 같은 값을 .env에만 적어 두고 실행하는 경우가 많아 시작 시 한 번 올린다.
+    if load_env:
+        load_env_file()
     app = FastAPI(title="Cluefin Web")
     repo = repository or DashboardRepository.from_env()
     app.state.repository = repo
     app.state.report_job = report_job or ReportGenerationJob()
+    app.state.sql_translator = sql_translator or translate_question_to_sql
     app.mount("/static", StaticFiles(directory=PACKAGE_DIR / "static"), name="static")
 
     @app.get("/healthz")
@@ -81,6 +90,49 @@ def create_app(
     def real_estate_query(payload: dict) -> dict:
         try:
             return app.state.repository.real_estate_query(payload)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    @app.get("/api/sql/schema")
+    def sql_schema(refresh: bool = False) -> dict:
+        schema = app.state.repository.sql_schema(refresh=refresh)
+        return {**schema, "llm": llm_settings_state()}
+
+    @app.post("/api/sql/run")
+    def sql_run(payload: dict) -> dict:
+        try:
+            return app.state.repository.sql_run(payload)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    @app.post("/api/sql/translate")
+    def sql_translate(payload: dict) -> dict:
+        try:
+            return app.state.sql_translator(
+                app.state.repository.client,
+                str(payload.get("question") or ""),
+                schema_context=app.state.repository.sql_schema(),
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        except RuntimeError as exc:  # 모델·게이트웨이 실패는 사용자 잘못이 아니므로 502로 구분한다.
+            raise HTTPException(status_code=502, detail=str(exc)) from exc
+
+    @app.get("/api/sql/saved")
+    def saved_sql_queries(limit: int = 100) -> list[dict]:
+        return app.state.repository.saved_sql_queries(limit)
+
+    @app.post("/api/sql/saved")
+    def save_sql_query(payload: dict) -> dict:
+        try:
+            return app.state.repository.save_sql_query(payload)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    @app.delete("/api/sql/saved/{name}")
+    def delete_sql_query(name: str) -> dict:
+        try:
+            return app.state.repository.delete_sql_query(name)
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
 

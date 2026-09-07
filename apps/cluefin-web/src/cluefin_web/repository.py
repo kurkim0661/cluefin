@@ -18,14 +18,25 @@ from cluefin_store.models import (
     PaperBacktestRun,
     PaperBacktestTrade,
     PaperStrategy,
+    SavedSqlQuery,
 )
 from cluefin_store.patterns import detect_pattern_candidates
+from cluefin_store.sql_console import (
+    MAX_ROWS,
+    SqlSafetyError,
+    collect_schema_context,
+    ensure_read_only,
+    run_read_only,
+)
+
+SCHEMA_CACHE_SECONDS = 300
 
 
 class DashboardRepository:
     def __init__(self, client: Any) -> None:
         self.client = client
         self._query_lock = RLock()
+        self._schema_cache: tuple[datetime, dict] | None = None
 
     @classmethod
     def from_env(cls) -> "DashboardRepository":
@@ -594,7 +605,122 @@ class DashboardRepository:
             fallback_columns=["bucket", "series", "value", "unit"] + (["metric_id"] if extra_select else []),
             parameters=parameters,
         )
-        return _real_estate_result(rows, request)
+        result = _real_estate_result(rows, request)
+        if request["overlay"]:
+            result["overlay"] = self._real_estate_overlay(request, result["buckets"])
+        return result
+
+    def _real_estate_overlay(self, request: dict, buckets: list[str]) -> dict | None:
+        """지표 차트 뒤에 깔아 줄 가격 기준선(매매가격지수 원값)을 같은 기간 축으로 뽑는다."""
+        overlay = request["overlay"]
+        if not buckets:
+            return None
+        conditions = ["metric_id = %(o_metric)s"]
+        parameters: dict[str, Any] = {"o_metric": overlay["metric_id"]}
+        for column in ("region", "property_type"):
+            if overlay.get(column):
+                conditions.append(f"{column} = %(o_{column})s")
+                parameters[f"o_{column}"] = overlay[column]
+        conditions.append("period >= %(o_start)s")
+        parameters["o_start"] = buckets[0]
+        if request["end_date"]:
+            conditions.append("period <= %(o_end)s")
+            parameters["o_end"] = request["end_date"]
+        # 기준선은 지수라 합계·마지막값 집계가 의미 없으므로 항상 평균으로 고정한다.
+        rows = self._query_rows(
+            f"""
+            SELECT toString({REAL_ESTATE_BUCKETS[request["bucket"]]}) AS bucket,
+                   avg(value) AS value,
+                   any(unit) AS unit
+            FROM market.real_estate_observations FINAL
+            WHERE {" AND ".join(conditions)}
+            GROUP BY bucket
+            ORDER BY bucket
+            """,
+            fallback_columns=["bucket", "value", "unit"],
+            parameters=parameters,
+        )
+        return _real_estate_overlay_result(rows, overlay, buckets)
+
+    def sql_schema(self, *, refresh: bool = False) -> dict:
+        """SQL 워크벤치용 스키마. 화면을 열 때마다 전체 스캔하지 않도록 짧게 캐시한다."""
+        now = datetime.now()
+        cached = self._schema_cache
+        if not refresh and cached and (now - cached[0]).total_seconds() < SCHEMA_CACHE_SECONDS:
+            return cached[1]
+        with self._query_lock:
+            context = collect_schema_context(self.client)
+        context["fetched_at"] = now.isoformat(timespec="seconds")
+        context["max_rows"] = MAX_ROWS
+        self._schema_cache = (now, context)
+        return context
+
+    def sql_run(self, payload: dict) -> dict:
+        """읽기 전용 가드를 통과한 SQL만 실행한다. 가드 위반은 ValueError로 400이 된다."""
+        requested = int(payload.get("max_rows") or MAX_ROWS)
+        max_rows = max(1, min(requested, MAX_ROWS))
+        try:
+            with self._query_lock:
+                return run_read_only(self.client, str(payload.get("sql") or ""), max_rows=max_rows)
+        except SqlSafetyError as exc:
+            raise ValueError(str(exc)) from exc
+        except Exception as exc:  # ClickHouse 문법·타입 오류를 그대로 보여 주는 편이 고치기 쉽다.
+            raise ValueError(_clickhouse_error(exc)) from exc
+
+    def saved_sql_queries(self, limit: int = 100) -> list[dict]:
+        return self._query_rows(
+            """
+            SELECT name, toString(query_id) AS query_id, question, sql, note, source,
+                   toString(created_at) AS created_at, toString(updated_at) AS updated_at
+            FROM market.saved_sql_queries FINAL
+            ORDER BY updated_at DESC
+            LIMIT %(limit)s
+            """,
+            fallback_columns=["name", "query_id", "question", "sql", "note", "source", "created_at", "updated_at"],
+            parameters={"limit": max(1, min(limit, 500))},
+        )
+
+    def save_sql_query(self, payload: dict) -> dict:
+        """이름을 붙여 쿼리를 저장한다. 같은 이름이면 ReplacingMergeTree가 최신 것만 남긴다."""
+        name = str(payload.get("name") or "").strip()
+        if not name:
+            raise ValueError("쿼리 이름을 입력해 주세요.")
+        if len(name) > 120:
+            raise ValueError("쿼리 이름은 120자 이내로 적어 주세요.")
+        sql = str(payload.get("sql") or "").strip()
+        try:
+            ensure_read_only(sql)
+        except SqlSafetyError as exc:
+            raise ValueError(str(exc)) from exc
+        existing = next((item for item in self.saved_sql_queries(500) if item["name"] == name), None)
+        now = datetime.now()
+        record = SavedSqlQuery(
+            name=name,
+            query_id=UUID(existing["query_id"]) if existing else uuid4(),
+            question=str(payload.get("question") or "").strip(),
+            sql=sql,
+            note=str(payload.get("note") or "").strip(),
+            source=str(payload.get("source") or "manual"),
+            created_at=datetime.fromisoformat(existing["created_at"]) if existing else now,
+            updated_at=now,
+        )
+        self._insert_records("market.saved_sql_queries", [record])
+        row = record.as_insert_row()
+        row["query_id"] = str(record.query_id)
+        row["created_at"] = record.created_at.isoformat(timespec="seconds")
+        row["updated_at"] = record.updated_at.isoformat(timespec="seconds")
+        return row
+
+    def delete_sql_query(self, name: str) -> dict:
+        target = str(name or "").strip()
+        if not target:
+            raise ValueError("삭제할 쿼리 이름이 필요합니다.")
+        with self._query_lock:
+            self.client.command(
+                "ALTER TABLE market.saved_sql_queries DELETE WHERE name = %(name)s",
+                parameters={"name": target},
+            )
+        return {"name": target, "deleted": True}
 
     def paper_dashboard(self) -> dict:
         return {
@@ -1432,6 +1558,15 @@ REAL_ESTATE_TRANSFORMS = {
     "rebase": "시작 시점 100 기준",
     "ratio": "두 지표 비율 (%)",
 }
+# 지표만 보면 "그래서 그때 집값은 어땠나"가 빠지므로, 차트 뒤에 매매가격지수를 기준선으로 겹쳐 준다.
+REAL_ESTATE_OVERLAY_METRIC = "house_sale_price_index"
+REAL_ESTATE_OVERLAY_METRICS = (
+    REAL_ESTATE_OVERLAY_METRIC,
+    "house_sale_price_index_long",
+    "apartment_real_transaction_index",
+)
+REAL_ESTATE_OVERLAY_REGION = "서울"
+REAL_ESTATE_OVERLAY_PROPERTY_TYPE = "아파트"
 REAL_ESTATE_TEMPLATES = [
     {
         "id": "capital_sale_index",
@@ -1452,6 +1587,7 @@ REAL_ESTATE_TEMPLATES = [
         "filters": {"region": ["서울", "경기", "인천", "지방"], "property_type": ["아파트"]},
         "transform": "yoy",
         "chart": "bar",
+        "overlay": {"region": "수도권", "property_type": "아파트"},
     },
     {
         "id": "seoul_property_types",
@@ -1462,6 +1598,7 @@ REAL_ESTATE_TEMPLATES = [
         "filters": {"region": ["서울"], "property_type": ["아파트", "연립다세대", "단독주택"]},
         "transform": "rebase",
         "chart": "line",
+        "overlay": {"region": "서울", "property_type": "아파트"},
     },
     {
         "id": "seoul_deal_types",
@@ -1472,6 +1609,7 @@ REAL_ESTATE_TEMPLATES = [
         "filters": {"region": ["서울"], "property_type": ["아파트"]},
         "transform": "rebase",
         "chart": "line",
+        "overlay": {"region": "서울", "property_type": "아파트"},
     },
     {
         "id": "jeonse_ratio_proxy",
@@ -1482,6 +1620,7 @@ REAL_ESTATE_TEMPLATES = [
         "filters": {"region": ["서울", "경기", "인천"], "property_type": ["아파트"]},
         "transform": "ratio",
         "chart": "line",
+        "overlay": {"region": "서울", "property_type": "아파트"},
     },
     {
         "id": "survey_vs_real_deal",
@@ -1492,6 +1631,8 @@ REAL_ESTATE_TEMPLATES = [
         "filters": {"region": ["서울"]},
         "transform": "rebase",
         "chart": "line",
+        # 실거래지수가 2016년까지 거슬러 올라가므로 기준선도 같은 지표를 써야 구간 전체가 채워진다.
+        "overlay": {"metric_id": "apartment_real_transaction_index", "region": "서울", "property_type": "전체"},
     },
     {
         "id": "seoul_subregions",
@@ -1502,6 +1643,7 @@ REAL_ESTATE_TEMPLATES = [
         "filters": {"region_tier": ["서울권역"]},
         "transform": "rebase",
         "chart": "line",
+        "overlay": {"metric_id": "apartment_real_transaction_index", "region": "서울", "property_type": "전체"},
     },
     {
         "id": "long_run_cycle",
@@ -1512,6 +1654,7 @@ REAL_ESTATE_TEMPLATES = [
         "filters": {"region": ["서울", "경기", "인천", "지방"], "property_type": ["아파트"]},
         "transform": "rebase",
         "chart": "line",
+        "overlay": {"metric_id": "house_sale_price_index_long", "region": "서울", "property_type": "아파트"},
     },
     {
         "id": "long_run_jeonse_gap",
@@ -1522,6 +1665,7 @@ REAL_ESTATE_TEMPLATES = [
         "filters": {"region": ["서울"], "property_type": ["아파트"]},
         "transform": "rebase",
         "chart": "line",
+        "overlay": {"metric_id": "house_sale_price_index_long", "region": "서울", "property_type": "아파트"},
     },
     {
         "id": "capital_vs_local",
@@ -1532,6 +1676,7 @@ REAL_ESTATE_TEMPLATES = [
         "filters": {"region": ["수도권", "지방", "전국"], "property_type": ["종합"]},
         "transform": "rebase",
         "chart": "line",
+        "overlay": {"region": "전국", "property_type": "종합"},
     },
     {
         "id": "unsold_inventory",
@@ -1543,6 +1688,7 @@ REAL_ESTATE_TEMPLATES = [
         "transform": "raw",
         "aggregation": "last",
         "chart": "area",
+        "overlay": {"metric_id": "apartment_real_transaction_index", "region": "수도권", "property_type": "전체"},
     },
     {
         "id": "housing_permits",
@@ -1554,6 +1700,7 @@ REAL_ESTATE_TEMPLATES = [
         "transform": "raw",
         "aggregation": "sum",
         "chart": "bar",
+        "overlay": {"metric_id": "apartment_real_transaction_index", "region": "수도권", "property_type": "전체"},
     },
     {
         "id": "land_price",
@@ -1565,8 +1712,18 @@ REAL_ESTATE_TEMPLATES = [
         "transform": "raw",
         "aggregation": "avg",
         "chart": "bar",
+        "overlay": {"metric_id": "apartment_real_transaction_index", "region": "전국", "property_type": "전체"},
     },
 ]
+
+
+def _clickhouse_error(exc: Exception) -> str:
+    """ClickHouse 예외에서 사람이 고칠 수 있는 부분만 남긴다."""
+    text = str(exc).replace("\n", " ")
+    marker = "DB::Exception:"
+    if marker in text:
+        text = text.split(marker, 1)[1]
+    return text.strip()[:400] or f"{type(exc).__name__}"
 
 
 def _real_estate_dimension_options(combos: list[dict]) -> dict:
@@ -1615,9 +1772,45 @@ def _real_estate_request(payload: dict) -> dict:
         "aggregation": aggregation,
         "series_dimension": series_dimension,
         "transform": transform,
+        "overlay": _real_estate_overlay_spec(payload.get("overlay"), filters),
         "start_date": str(payload["start_date"]) if payload.get("start_date") else None,
         "end_date": str(payload["end_date"]) if payload.get("end_date") else None,
     }
+
+
+def _real_estate_overlay_spec(raw: Any, filters: dict[str, list[str]]) -> dict | None:
+    """`overlay`가 True거나 dict면 겹쳐 그릴 가격 기준선 조건을 만든다. 비면 기준선을 그리지 않는다."""
+    if not raw:
+        return None
+    spec = raw if isinstance(raw, dict) else {}
+    metric_id = str(spec.get("metric_id") or REAL_ESTATE_OVERLAY_METRIC)
+    if metric_id not in REAL_ESTATE_OVERLAY_METRICS:
+        raise ValueError(f"overlay.metric_id는 {', '.join(REAL_ESTATE_OVERLAY_METRICS)} 중 하나여야 합니다.")
+    # 지역을 안 고르면 본 차트의 첫 지역 필터를 따라가고, 그마저 없으면 서울을 기준으로 삼는다.
+    region = str(spec.get("region") or "") or next(iter(filters.get("region") or []), REAL_ESTATE_OVERLAY_REGION)
+    property_type = str(spec.get("property_type") or "") or REAL_ESTATE_OVERLAY_PROPERTY_TYPE
+    # 주택유형 "전체"는 유형을 나누지 않는 지표라는 뜻이라 이름에 붙이면 군더더기가 된다.
+    label_parts = (region, "" if property_type == "전체" else property_type)
+    return {
+        "metric_id": metric_id,
+        "region": region,
+        "property_type": property_type,
+        "label": " ".join(part for part in label_parts if part),
+    }
+
+
+def _real_estate_overlay_result(rows: list[dict], overlay: dict, buckets: list[str]) -> dict | None:
+    values: dict[str, float] = {}
+    unit = ""
+    for row in rows:
+        if row.get("value") is None:
+            continue
+        values[str(row["bucket"])] = float(row["value"])
+        unit = unit or str(row.get("unit") or "")
+    points = [_round_point(values.get(bucket)) for bucket in buckets]
+    if not any(point is not None for point in points):
+        return None
+    return {**overlay, "unit": unit, "points": points}
 
 
 def _shift_period(bucket_date: date, bucket: str, periods: int) -> date:
@@ -1662,6 +1855,7 @@ def _real_estate_result(rows: list[dict], request: dict) -> dict:
         "aggregation": request["aggregation"],
         "series_dimension": request["series_dimension"],
         "metric_ids": request["metric_ids"],
+        "overlay": None,
     }
 
 

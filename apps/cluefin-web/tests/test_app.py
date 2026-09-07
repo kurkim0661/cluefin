@@ -2,6 +2,13 @@ from cluefin_web.app import PACKAGE_DIR, create_app
 
 
 class FakeRepository:
+    client = "fake-clickhouse-client"
+
+    def __init__(self) -> None:
+        self.saved: list[dict] = []
+        self.ran: list[dict] = []
+        self.deleted: list[str] = []
+
     def snapshot(self) -> dict:
         return {
             "overview": {"symbols": 1},
@@ -53,6 +60,68 @@ class FakeRepository:
             "prompt_version": "cluefin-daily-v1",
             "generated_at": "2026-08-27 09:00:00",
         }
+
+    def sql_schema(self, *, refresh: bool = False) -> dict:
+        return {
+            "database": "market",
+            "max_rows": 2000,
+            "fetched_at": "2026-08-31T20:00:00",
+            "tables": [
+                {
+                    "database": "market",
+                    "table": "real_estate_observations",
+                    "engine": "ReplacingMergeTree",
+                    "sorting_key": "metric_id, period",
+                    "total_rows": 15216,
+                    "columns": [
+                        {"name": "period", "type": "Date", "role": "time", "comment": ""},
+                        {"name": "metric_id", "type": "LowCardinality(String)", "role": "dimension", "comment": ""},
+                        {"name": "value", "type": "Float64", "role": "fact", "comment": ""},
+                    ],
+                    "samples": {"metric_id": ["unsold_housing"]},
+                    "period": {"column": "period", "first": "2016-09-01", "last": "2026-06-01"},
+                    "catalog": [{"key": "unsold_housing", "label": "미분양 주택"}],
+                }
+            ],
+        }
+
+    def sql_run(self, payload: dict) -> dict:
+        if "drop" in str(payload.get("sql", "")).lower():
+            raise ValueError("읽기 전용 콘솔이라 SELECT로 시작하는 문장만 실행할 수 있습니다.")
+        self.ran.append(payload)
+        return {
+            "sql": payload.get("sql", ""),
+            "columns": ["기간", "평균"],
+            "column_types": ["Date", "Float64"],
+            "rows": [["2026-06-01", 109.5]],
+            "row_count": 1,
+            "truncated": False,
+            "elapsed_ms": 4.2,
+        }
+
+    def saved_sql_queries(self, limit: int = 100) -> list[dict]:
+        return self.saved[:limit]
+
+    def save_sql_query(self, payload: dict) -> dict:
+        if not payload.get("name"):
+            raise ValueError("쿼리 이름을 입력해 주세요.")
+        row = {
+            "name": payload["name"],
+            "query_id": "00000000-0000-0000-0000-000000000001",
+            "question": payload.get("question", ""),
+            "sql": payload.get("sql", ""),
+            "note": "",
+            "source": payload.get("source", "manual"),
+            "created_at": "2026-08-31T20:00:00",
+            "updated_at": "2026-08-31T20:00:00",
+        }
+        self.saved = [item for item in self.saved if item["name"] != row["name"]] + [row]
+        return row
+
+    def delete_sql_query(self, name: str) -> dict:
+        self.deleted.append(name)
+        self.saved = [item for item in self.saved if item["name"] != name]
+        return {"name": name, "deleted": True}
 
     def real_estate_meta(self) -> dict:
         return {
@@ -397,5 +466,176 @@ def test_real_estate_tab_has_builder_and_template_targets() -> None:
     assert "collectEstatePayload" in script
     assert "renderEstateChart" in script
     assert "ESTATE_FILTER_DIMENSIONS" in script
+
+
+def test_real_estate_tab_can_overlay_price_index_on_indicator_charts() -> None:
+    from fastapi.testclient import TestClient
+
+    client = TestClient(create_app(FakeRepository()))
+    html = client.get("/").text
+    script = (PACKAGE_DIR / "static" / "app.js").read_text(encoding="utf-8")
+
+    assert 'id="estate-overlay"' in html
+    assert 'id="estate-overlay-metric"' in html
+    assert 'id="estate-overlay-region"' in html
+    assert 'id="estate-overlay-note"' in html
+    assert "collectEstateOverlay" in script
+    assert "drawEstateOverlay" in script
+    assert "estateOverlayLabel" in script
+    # 실거래지수를 기준선으로 쓸 때는 아파트 매매 한정·신고 지연 수정을 함께 알린다.
+    assert "신고 지연 때문에 최근 값은 나중에 수정될 수 있습니다" in script
     # 차트 컨테이너와 차트 형태 셀렉트가 같은 id를 쓰면 캔버스 크기가 0이 된다.
     assert html.count('id="estate-chart"') == 1
+
+
+def test_sql_schema_route_exposes_columns_roles_and_llm_state() -> None:
+    from fastapi.testclient import TestClient
+
+    client = TestClient(create_app(FakeRepository()))
+
+    schema = client.get("/api/sql/schema").json()
+
+    table = schema["tables"][0]
+    assert schema["database"] == "market"
+    assert schema["max_rows"] == 2000
+    assert {column["name"]: column["role"] for column in table["columns"]} == {
+        "period": "time",
+        "metric_id": "dimension",
+        "value": "fact",
+    }
+    assert table["catalog"] == [{"key": "unsold_housing", "label": "미분양 주택"}]
+    # LLM 설정 여부는 화면이 자연어 입력창을 켤지 결정하는 데 쓴다.
+    assert "configured" in schema["llm"]
+
+
+def test_sql_run_route_returns_table_and_rejects_write_statements() -> None:
+    from fastapi.testclient import TestClient
+
+    repository = FakeRepository()
+    client = TestClient(create_app(repository))
+
+    ok = client.post("/api/sql/run", json={"sql": "SELECT 1"})
+    assert ok.status_code == 200
+    assert ok.json()["columns"] == ["기간", "평균"]
+    assert repository.ran == [{"sql": "SELECT 1"}]
+
+    blocked = client.post("/api/sql/run", json={"sql": "DROP TABLE market.real_estate_observations"})
+    assert blocked.status_code == 400
+    assert "읽기 전용" in blocked.json()["detail"]
+
+
+def test_sql_translate_route_uses_injected_agent_and_maps_failures() -> None:
+    from fastapi.testclient import TestClient
+
+    calls: list[tuple] = []
+
+    def translator(client_obj, question: str, *, schema_context=None) -> dict:
+        calls.append((client_obj, question, bool(schema_context)))
+        if question == "터짐":
+            raise RuntimeError("gateway timeout")
+        if not question:
+            raise ValueError("무엇을 보고 싶은지 한 줄로 적어 주세요.")
+        return {"sql": "SELECT 1 LIMIT 1", "explanation": "한 줄", "notes": [], "status": "validated", "attempts": 1}
+
+    client = TestClient(create_app(FakeRepository(), sql_translator=translator))
+
+    ok = client.post("/api/sql/translate", json={"question": "미분양 추이"})
+    assert ok.status_code == 200
+    assert ok.json()["sql"] == "SELECT 1 LIMIT 1"
+    # 에이전트는 저장소의 ClickHouse 클라이언트와 스키마 컨텍스트를 함께 받는다.
+    assert calls[0] == ("fake-clickhouse-client", "미분양 추이", True)
+
+    assert client.post("/api/sql/translate", json={"question": ""}).status_code == 400
+    assert client.post("/api/sql/translate", json={"question": "터짐"}).status_code == 502
+
+
+def test_saved_sql_query_routes_round_trip() -> None:
+    from fastapi.testclient import TestClient
+
+    repository = FakeRepository()
+    client = TestClient(create_app(repository))
+
+    saved = client.post("/api/sql/saved", json={"name": "수도권 미분양", "sql": "SELECT 1", "source": "nl2sql"})
+    assert saved.status_code == 200
+    assert saved.json()["source"] == "nl2sql"
+    assert [item["name"] for item in client.get("/api/sql/saved").json()] == ["수도권 미분양"]
+
+    assert client.post("/api/sql/saved", json={"sql": "SELECT 1"}).status_code == 400
+
+    assert client.delete("/api/sql/saved/수도권 미분양").json() == {"name": "수도권 미분양", "deleted": True}
+    assert client.get("/api/sql/saved").json() == []
+    assert repository.deleted == ["수도권 미분양"]
+
+
+def test_sql_workbench_tab_has_schema_editor_and_agent_targets() -> None:
+    from fastapi.testclient import TestClient
+
+    client = TestClient(create_app(FakeRepository()))
+    html = client.get("/").text
+    script = (PACKAGE_DIR / "static" / "app.js").read_text(encoding="utf-8")
+
+    assert 'data-tab="sql"' in html
+    for element in (
+        "sql-panel",
+        "sql-table",
+        "sql-dimensions",
+        "sql-facts",
+        "sql-question",
+        "sql-text",
+        "sql-result",
+        "sql-saved",
+    ):
+        assert f'id="{element}"' in html
+    assert "loadSqlWorkbench" in script
+    assert "buildSqlSkeleton" in script
+    assert "translateSqlQuestion" in script
+    assert "runSqlQuery" in script
+    # 한글 별칭은 backtick으로 감싸야 ClickHouse가 받는다.
+    assert "sqlIdentifier" in script
+
+
+def test_create_app_loads_llm_settings_from_the_env_file(monkeypatch, tmp_path) -> None:
+    """.env에만 CLUEFIN_LLM_*를 적어 둔 상태로 웹을 띄워도 자연어 변환이 켜져야 한다."""
+    from cluefin_store.env import ENV_PATH_VAR
+    from fastapi.testclient import TestClient
+
+    env_file = tmp_path / ".env"
+    env_file.write_text(
+        "CLUEFIN_LLM_PAT=pat\nCLUEFIN_LLM_BASE_URL=https://gateway/v1\nCLUEFIN_LLM_MODEL=model-x\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv(ENV_PATH_VAR, str(env_file))
+
+    schema = TestClient(create_app(FakeRepository())).get("/api/sql/schema").json()
+
+    assert schema["llm"]["configured"] is True
+    assert schema["llm"]["model"] == "model-x"
+    assert schema["llm"]["sources"]["pat"] == "CLUEFIN_LLM_PAT"
+
+
+def test_llm_settings_accept_conventional_openai_variable_names(monkeypatch) -> None:
+    """다른 도구가 export해 둔 이름만 있어도 켜져야 한다. 설정 없이 바로 쓰는 게 목적이다."""
+    from fastapi.testclient import TestClient
+
+    monkeypatch.setenv("OPENAI_API_KEY", "key")
+    monkeypatch.setenv("OPENAI_BASE_URL", "https://gateway/v1")
+    monkeypatch.setenv("OPENAI_MODEL", "gpt-5.4-mini")
+
+    schema = TestClient(create_app(FakeRepository())).get("/api/sql/schema").json()
+
+    assert schema["llm"]["configured"] is True
+    assert schema["llm"]["model"] == "gpt-5.4-mini"
+    assert schema["llm"]["sources"] == {
+        "pat": "OPENAI_API_KEY",
+        "base_url": "OPENAI_BASE_URL",
+        "model": "OPENAI_MODEL",
+    }
+
+
+def test_missing_llm_settings_message_says_where_to_put_them() -> None:
+    from cluefin_web.report_jobs import missing_llm_message
+
+    message = missing_llm_message(["CLUEFIN_LLM_PAT"])
+
+    assert "CLUEFIN_LLM_PAT" in message
+    assert ".env" in message
