@@ -73,19 +73,37 @@ def _load_dotenv_file(path: Path) -> dict[str, str]:
         if not line or line.startswith("#") or "=" not in line:
             continue
 
+        if line.startswith("export "):
+            line = line[len("export ") :].lstrip()
+
         key, _, value = line.partition("=")
         key = key.strip()
-        value = value.strip()
 
         if not key:
             continue
 
-        if value and value[0] == value[-1] and value[0] in {'"', "'"}:
-            value = value[1:-1]
-
-        values[key] = value
+        values[key] = _clean_dotenv_value(value.strip())
 
     return values
+
+
+def _clean_dotenv_value(value: str) -> str:
+    """Strip quotes and any comment that follows the value.
+
+    `KIWOOM_ENV=dev # options: prod | dev` must yield `dev`; keeping the comment made
+    `kiwoom_env` fail its literal validation downstream. Matches shell `source` semantics:
+    only an unquoted ` #` starts a comment.
+    """
+    if value[:1] in {'"', "'"}:
+        quote = value[0]
+        closing = value.find(quote, 1)
+        return value[1:closing] if closing != -1 else value[1:]
+
+    for index in range(len(value) - 1):
+        if value[index].isspace() and value[index + 1] == "#":
+            return value[:index].rstrip()
+
+    return value
 
 
 class BrokerClientFactory:

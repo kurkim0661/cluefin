@@ -15,6 +15,9 @@ from cluefin_store.models import (
     _quantize_price,
 )
 
+# 일봉 한 개로 계산한 VWAP은 종가와 구별되지 않으므로 거래량 가중 평균을 20일 창으로 낸다.
+VWAP_PERIOD = 20
+
 
 @dataclass(frozen=True, slots=True)
 class PatternCandidate:
@@ -61,10 +64,27 @@ def _simple_ma(candles: list[DailyOhlcv], end_index: int, period: int) -> Decima
     return _average([candle.close for candle in candles[start : end_index + 1]])
 
 
-def _vwap(candle: DailyOhlcv) -> Decimal | None:
-    if candle.volume == 0:
+def _rolling_vwap(candles: list[DailyOhlcv], end_index: int, period: int = VWAP_PERIOD) -> Decimal | None:
+    """거래량으로 가중한 최근 `period`일 평균가.
+
+    하루치 VWAP(거래대금/거래량)은 일봉만 있는 공급자에서는 종가와 같아진다. Toss는 거래대금을
+    종가×거래량으로 합성하므로 정확히 종가가 되어 지표로 쓸 수 없다. 그래서 창을 여러 날로 넓힌다.
+    """
+    start = end_index - period + 1
+    if start < 0:
         return None
-    return _quantize_price(candle.trading_amount / Decimal(candle.volume))
+    amount = Decimal("0")
+    volume = Decimal("0")
+    for candle in candles[start : end_index + 1]:
+        candle_volume = Decimal(candle.volume)
+        if candle_volume == 0:
+            continue
+        # 공급자가 실제 거래대금을 주면 그걸 쓰고, 없으면 종가×거래량으로 메운다.
+        amount += candle.trading_amount if candle.trading_amount else candle.close * candle_volume
+        volume += candle_volume
+    if volume == 0:
+        return None
+    return _quantize_price(amount / volume)
 
 
 def _ema_values(candles: list[DailyOhlcv], period: int) -> list[Decimal | None]:
@@ -209,7 +229,7 @@ def compute_technical_features(
                 symbol=candle.symbol,
                 close=candle.close,
                 volume=candle.volume,
-                vwap=_vwap(candle),
+                vwap=_rolling_vwap(ordered, index),
                 ma_20=ma_20,
                 ma_50=ma_50,
                 ma_200=ma_200,

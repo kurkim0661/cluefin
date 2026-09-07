@@ -78,12 +78,45 @@ uv run cluefin-store import-indicators --file vendor-indicators.csv --dry-run
 uv run cluefin-store import-indicators --file vendor-indicators.csv
 ```
 
+## Derived tables
+
+`market.market_calendar`, `market.stock_master`, and `market.exchange_rates` have no collector of
+their own — they are rebuilt from rows already in ClickHouse, so they cost nothing to regenerate:
+
+```bash
+uv run cluefin-store derive-tables --dry-run
+uv run cluefin-store derive-tables
+uv run cluefin-store derive-tables --table stock_master
+```
+
+- **market_calendar** ← distinct `daily_ohlcv` trade dates. `daily_ohlcv` has no country column, so
+  the provider decides it (`toss`→KR, `toss_us`→US, overridden by `daily_universe_members`); two
+  providers covering one country collapse into one row per day. Only trading days are written.
+- **stock_master** ← latest `daily_universe_members` row per (provider, symbol) for the name and
+  country; `currency` follows the country. `market` and `security_type` stay NULL because the Toss
+  ranking response does not carry them — an empty column is better than an invented one.
+- **exchange_rates** ← `indicator_observations` rows listed in `EXCHANGE_RATE_INDICATORS`
+  (currently `usd_krw` → USD/KRW). Add a tuple there to publish another pair.
+
+Re-run this after any `backfill-top` or `update-indicators` job that extends the source rows.
+
+## VWAP is a 20-day rolling average
+
+`daily_technical_features.vwap` is Σ(amount)/Σ(volume) over the trailing 20 sessions
+(`patterns.VWAP_PERIOD`), not a single day's value. A one-day VWAP is amount ÷ volume, and the Toss
+provider synthesises `daily_ohlcv.trading_amount` as `close × volume` (`toss.py`), which made the
+column an exact copy of `close` — useless as an indicator, and it silently starved every paper
+strategy that counted a vwap vote (agreement never reached 3 of 3). The rolling window restores a
+real signal: with the same data, `close` now sits above vwap on 13.6k days and below on 10.3k.
+The first 19 sessions per symbol are NULL because the window is not full yet.
+
 ## Suggested schedule
 
 - Daily 07:30 KST: FRED, DefiLlama, Coin Metrics, CoinGecko; use a 14-day lookback to absorb revisions.
 - Daily 07:45 KST: Binance futures and ECOS. Monthly and event series are safely upserted by period.
 - Weekly after DART filing season: DART aggregate fundamentals for the latest ranked universe.
 - Once after schema changes: a 400-day backfill to give cards enough history for trend lines.
+- After any of the above: `derive-tables`, so the calendar, master, and FX tables track the new rows.
 
 ClickHouse uses `ReplacingMergeTree(collected_at)`, so repeated overlapping windows are expected. Query with `FINAL` when checking canonical counts.
 

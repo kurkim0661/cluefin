@@ -8,6 +8,8 @@ import click
 
 from cluefin_store.analysis import PatternAnalysisConfig, pattern_collection_plan
 from cluefin_store.db import ClickHouseSettings, ClickHouseStore
+from cluefin_store.derived import DERIVED_TABLES, derive_tables
+from cluefin_store.env import load_env_file
 from cluefin_store.indicators import (
     INDICATOR_CATALOG,
     catalog_summary,
@@ -26,6 +28,8 @@ from cluefin_store.toss_us import TossUsMarketCapProvider
 @click.group()
 def cli() -> None:
     """ClickHouse-backed daily market data store commands."""
+    # 콘솔 실행에서도 저장소 루트의 .env가 적용되게 한다. 실제 환경변수가 우선한다.
+    load_env_file()
 
 
 @cli.command()
@@ -255,6 +259,24 @@ def backfill_top_command(
         run_id=uuid4(),
         collected_at=datetime.now(),
     )
+    click.echo(json.dumps(summary, ensure_ascii=False, indent=2, sort_keys=True))
+
+
+@cli.command(name="derive-tables")
+@click.option(
+    "--table",
+    "table_names",
+    multiple=True,
+    type=click.Choice(DERIVED_TABLES),
+    help="Rebuild only these derived tables. Repeat the flag for several.",
+)
+@click.option("--dry-run", is_flag=True, help="Count the rows that would be written without inserting them.")
+def derive_tables_command(table_names: tuple[str, ...], dry_run: bool) -> None:
+    """Rebuild calendar, stock master, and FX tables from data already in ClickHouse."""
+    store = ClickHouseStore()
+    if not dry_run:
+        store.apply_schema()
+    summary = derive_tables(store, tables=table_names or DERIVED_TABLES, dry_run=dry_run)
     click.echo(json.dumps(summary, ensure_ascii=False, indent=2, sort_keys=True))
 
 

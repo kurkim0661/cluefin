@@ -39,6 +39,7 @@ def test_config_from_env_reads_dotenv_from_cwd(tmp_path, monkeypatch):
         "KIWOOM_APP_KEY=dotenv-kiwoom\n"
         "KIWOOM_SECRET_KEY=dotenv-kiwoom-secret\n"
         "DART_AUTH_KEY=dotenv-dart\n"
+        "KIWOOM_ENV=dev # options: prod | dev(default)\n"
         "CLUEFIN_OPENAPI_CACHE_DIR=.cache/cluefin\n",
         encoding="utf-8",
     )
@@ -48,6 +49,7 @@ def test_config_from_env_reads_dotenv_from_cwd(tmp_path, monkeypatch):
     monkeypatch.delenv("KIWOOM_APP_KEY", raising=False)
     monkeypatch.delenv("KIWOOM_SECRET_KEY", raising=False)
     monkeypatch.delenv("DART_AUTH_KEY", raising=False)
+    monkeypatch.delenv("KIWOOM_ENV", raising=False)
     monkeypatch.delenv("CLUEFIN_OPENAPI_CACHE_DIR", raising=False)
 
     config = BrokerClientConfig.from_env()
@@ -57,6 +59,8 @@ def test_config_from_env_reads_dotenv_from_cwd(tmp_path, monkeypatch):
     assert config.kiwoom_app_key == "dotenv-kiwoom"
     assert config.kiwoom_secret_key == "dotenv-kiwoom-secret"
     assert config.dart_auth_key == "dotenv-dart"
+    # 값 뒤의 인라인 주석은 셸의 source처럼 잘라낸다. 남기면 kiwoom_env 검증이 깨진다.
+    assert config.kiwoom_env == "dev"
     assert config.cache_dir == ".cache/cluefin"
 
 

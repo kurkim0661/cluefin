@@ -102,6 +102,55 @@ class DailyResearchReport(InsertableRecord):
 
 
 @dataclass(frozen=True, slots=True)
+class MarketCalendarDay(InsertableRecord):
+    """거래가 실제로 있었던 날. 적재된 일봉에서 파생한다."""
+
+    market_country: str
+    trade_date: date
+    is_open: int
+    reason: str | None
+    provider: str
+    updated_at: datetime
+
+
+@dataclass(frozen=True, slots=True)
+class StockMasterEntry(InsertableRecord):
+    provider: str
+    symbol: str
+    name: str
+    market: str | None
+    market_country: str
+    currency: str | None
+    security_type: str | None
+    updated_at: datetime
+
+
+@dataclass(frozen=True, slots=True)
+class ExchangeRate(InsertableRecord):
+    trade_date: date
+    provider: str
+    base_currency: str
+    quote_currency: str
+    rate: Decimal
+    run_id: UUID
+    collected_at: datetime
+
+
+@dataclass(frozen=True, slots=True)
+class SavedSqlQuery(InsertableRecord):
+    """SQL 워크벤치에서 이름을 붙여 저장한 쿼리. 같은 이름으로 저장하면 최신 것만 남는다."""
+
+    name: str
+    query_id: UUID
+    question: str
+    sql: str
+    note: str
+    source: str
+    created_at: datetime
+    updated_at: datetime
+
+
+@dataclass(frozen=True, slots=True)
 class DailyUniverseMember(InsertableRecord):
     trade_date: date
     provider: str

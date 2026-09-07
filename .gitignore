@@ -73,6 +73,7 @@ poetry.lock
 
 # Environment variables
 .env*
+!.env.sample
 
 # Token cache files
 *_token_cache.json

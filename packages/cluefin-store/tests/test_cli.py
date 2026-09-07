@@ -1,3 +1,5 @@
+import os
+
 from click.testing import CliRunner
 
 from cluefin_store.cli import cli
@@ -140,3 +142,67 @@ def test_import_indicators_dry_run_validates_normalized_csv(tmp_path) -> None:
     assert result.exit_code == 0
     assert '"observations": 1' in result.output
     assert '"btc_spot_etf_flow"' in result.output
+
+
+def test_derive_tables_dry_run_lists_the_three_derived_tables(monkeypatch) -> None:
+    from cluefin_store import cli as cli_module
+
+    captured: dict = {}
+
+    def fake_derive(store, *, tables, dry_run):
+        captured["tables"] = tables
+        captured["dry_run"] = dry_run
+        return {"rows": {f"market.{name}": 1 for name in tables}, "dry_run": dry_run, "run_id": "r"}
+
+    monkeypatch.setattr(cli_module, "derive_tables", fake_derive)
+    monkeypatch.setattr(cli_module, "ClickHouseStore", lambda: object())
+
+    result = CliRunner().invoke(cli, ["derive-tables", "--dry-run"])
+
+    assert result.exit_code == 0
+    assert captured["tables"] == ("market_calendar", "stock_master", "exchange_rates")
+    assert captured["dry_run"] is True
+    assert "market.exchange_rates" in result.output
+
+
+def test_derive_tables_accepts_a_single_table(monkeypatch) -> None:
+    from cluefin_store import cli as cli_module
+
+    captured: dict = {}
+
+    def fake_derive(store, *, tables, dry_run):
+        captured["tables"] = tables
+        return {"rows": {}, "dry_run": dry_run, "run_id": "r"}
+
+    monkeypatch.setattr(cli_module, "derive_tables", fake_derive)
+    monkeypatch.setattr(cli_module, "ClickHouseStore", lambda: object())
+
+    result = CliRunner().invoke(cli, ["derive-tables", "--table", "stock_master", "--dry-run"])
+
+    assert result.exit_code == 0
+    assert captured["tables"] == ("stock_master",)
+
+
+def test_cli_group_loads_the_repo_env_file(monkeypatch, tmp_path) -> None:
+    """`.env`에 값을 넣어 두면 export 없이도 수집기가 읽어야 한다."""
+    from cluefin_store import cli as cli_module
+
+    (tmp_path / ".env").write_text("DART_AUTH_KEY=from-dotenv\n", encoding="utf-8")
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.delenv("DART_AUTH_KEY", raising=False)
+    monkeypatch.delenv("CLUEFIN_ENV_FILE", raising=False)
+    seen: dict = {}
+
+    @cli_module.cli.command(name="probe-env")
+    def probe_env() -> None:
+        seen["value"] = os.getenv("DART_AUTH_KEY")
+
+    try:
+        result = CliRunner().invoke(cli, ["probe-env"])
+    finally:
+        cli_module.cli.commands.pop("probe-env", None)
+        # 로더는 실제 os.environ을 채우므로 여기서 지워야 뒤 테스트가 오염되지 않는다.
+        os.environ.pop("DART_AUTH_KEY", None)
+
+    assert result.exit_code == 0
+    assert seen["value"] == "from-dotenv"

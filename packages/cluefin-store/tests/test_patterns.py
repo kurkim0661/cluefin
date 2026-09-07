@@ -5,6 +5,7 @@ from uuid import UUID
 
 from cluefin_store.models import DailyOhlcv, PatternEvent
 from cluefin_store.patterns import (
+    VWAP_PERIOD,
     approximate_volume_profile,
     compute_technical_features,
     detect_pattern_candidates,
@@ -65,7 +66,12 @@ def test_compute_technical_features_calculates_vwap_ema_and_rsi() -> None:
 
     features = compute_technical_features(candles, provider="test", run_id=RUN_ID, collected_at=COLLECTED_AT)
 
-    assert features[-1].vwap == Decimal("159.0000")
+    # 20일 거래량 가중 평균이라 상승 구간에서는 종가(159)보다 낮다. 하루치 VWAP이면 종가와 같아진다.
+    assert features[-1].vwap == Decimal("149.5317")
+    assert features[-1].vwap < features[-1].close
+    # 창이 다 차기 전에는 값을 내지 않는다.
+    assert features[VWAP_PERIOD - 2].vwap is None
+    assert features[VWAP_PERIOD - 1].vwap is not None
     assert features[-1].ema_20 is not None
     assert features[-1].ema_50 is not None
     assert features[-1].ema_20 > features[-1].ema_50

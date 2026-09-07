@@ -9,8 +9,13 @@ and command lists are discoverable, so they're not repeated here.
 
 - Real credentials live in `.env` (and `.env.test`) at the repo root — **never echo, print,
   or commit their values**.
-- For setup, copy a `*.env.sample` (e.g. `packages/cluefin-openapi/.env.sample`,
-  `apps/cluefin-cli/.env.sample`) to `.env`.
+- For setup, copy `.env.sample` (root, has every key) to `.env`. Per-package samples still exist
+  (`packages/cluefin-openapi/.env.sample`, `packages/cluefin-agent/.env.sample`,
+  `apps/cluefin-cli/.env.sample`) and cover only that package's keys.
+- `cluefin-store` / `cluefin-agent` / `cluefin-web` call `cluefin_store.env.load_env_file()` at
+  their entrypoint, which walks up from the working directory to find `.env` and fills only the
+  variables that are unset — **exported shell values always win**, and `CLUEFIN_ENV_FILE`
+  overrides the path. `cluefin-openapi` keeps its own loader so it stays dependency-free.
 
 ## Testing policy
 

@@ -257,6 +257,21 @@ SCHEMA_STATEMENTS: tuple[str, ...] = (
     ORDER BY (metric_id, region, property_type, deal_type, period)
     """,
     """
+    CREATE TABLE IF NOT EXISTS market.saved_sql_queries
+    (
+        name String,
+        query_id UUID,
+        question String,
+        sql String,
+        note String,
+        source LowCardinality(String),
+        created_at DateTime64(3, 'Asia/Seoul'),
+        updated_at DateTime64(3, 'Asia/Seoul')
+    )
+    ENGINE = ReplacingMergeTree(updated_at)
+    ORDER BY name
+    """,
+    """
     CREATE TABLE IF NOT EXISTS market.daily_research_reports
     (
         report_date Date,
