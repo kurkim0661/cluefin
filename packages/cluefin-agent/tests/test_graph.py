@@ -4,6 +4,19 @@ from langchain_core.messages import AIMessage
 
 from cluefin_agent.graph import build_daily_report_graph, prepare_report_prompt
 
+FULL_REPORT = (
+    "# 오늘의 시장 리포트\n"
+    "## 한눈에\n혼조\n"
+    "## 지난 리포트 점검\n이어짐\n"
+    "## 글로벌\n금리\n"
+    "## 한국\n주식\n"
+    "## 코인\n온체인\n"
+    "## 부동산과 주거 시장\n전세\n"
+    "## 패턴\n관찰\n"
+    "## 자산별 포지션 가이드\n관망\n"
+    "## 데이터 한계\n표본"
+)
+
 
 class FakeRepository:
     def __init__(self) -> None:
@@ -16,6 +29,14 @@ class FakeRepository:
             "patterns": [{"pattern_name": "double_bottom", "sample_count": 50}],
             "signals": [{"symbol": "005930", "pattern_name": "double_bottom"}],
             "universe": [{"market_country": "KR", "symbols": 50}],
+            "real_estate": [{"metric_id": "house_jeonse_price_index", "region": "서울", "value_display": "104.2"}],
+            "previous_reports": [
+                {
+                    "report_date": "2026-08-25",
+                    "title": "어제 리포트",
+                    "sections": {"오늘 확인할 체크리스트": "전세가율"},
+                }
+            ],
             "coverage": {"observed": 1, "total": 1, "unavailable": []},
         }
 
@@ -25,11 +46,12 @@ class FakeRepository:
 
 
 class FakeModel:
+    def __init__(self, content: str = FULL_REPORT) -> None:
+        self.content = content
+
     def invoke(self, messages):
         assert "<snapshot>" in messages[1].content
-        return AIMessage(
-            content="# 오늘의 시장 리포트\n## 한눈에\n혼조\n## 글로벌\n금리\n## 한국\n주식\n## 코인\n온체인\n## 패턴\n관찰\n## 데이터 한계\n표본"
-        )
+        return AIMessage(content=self.content)
 
 
 def test_prepare_report_prompt_contains_evidence_contract() -> None:
@@ -40,12 +62,31 @@ def test_prepare_report_prompt_contains_evidence_contract() -> None:
     assert '"observed":10' in prompt
 
 
+def test_prepare_report_prompt_asks_for_continuity_position_and_real_estate() -> None:
+    prompt = prepare_report_prompt({"report_date": "2026-08-26", "coverage": {}})
+
+    assert "## 지난 리포트 점검" in prompt
+    assert "이어짐 / 반전 / 미확인" in prompt
+    assert "## 부동산과 주거 시장" in prompt
+    assert "| 자산 | 스탠스 | 근거 | 무효화 신호 |" in prompt
+    assert "비중 확대 / 유지 / 축소 / 관망" in prompt
+
+
 def test_system_prompt_requires_line_broken_blocks_and_display_numbers() -> None:
     from cluefin_agent.graph import SYSTEM_PROMPT
 
     assert "value_display" in SYSTEM_PROMPT
     assert "78601.4032035769" in SYSTEM_PROMPT
     assert "네 단계를 한 문단에 이어 붙이지 않는다" in SYSTEM_PROMPT
+
+
+def test_system_prompt_forces_a_stance_and_uses_previous_reports() -> None:
+    from cluefin_agent.graph import SYSTEM_PROMPT
+
+    assert "previous_reports" in SYSTEM_PROMPT
+    assert "비중 확대 / 유지 / 축소 / 관망" in SYSTEM_PROMPT
+    assert '"상황에 따라 다르다"로 회피하지 않는다' in SYSTEM_PROMPT
+    assert "yoy_pct_display" in SYSTEM_PROMPT
 
 
 def test_langgraph_generates_validates_and_persists_report() -> None:
@@ -59,3 +100,21 @@ def test_langgraph_generates_validates_and_persists_report() -> None:
     assert result["model"] == "test-model"
     assert repository.saved[0].report_date.isoformat() == "2026-08-26"
     assert "미국 실질금리" in repository.saved[0].source_snapshot_json
+
+
+def test_validate_flags_a_report_without_position_or_real_estate_sections() -> None:
+    without_new_sections = FULL_REPORT.replace("## 부동산과 주거 시장\n전세\n", "").replace(
+        "## 자산별 포지션 가이드\n관망\n", ""
+    )
+    graph = build_daily_report_graph(
+        repository=FakeRepository(),
+        model=FakeModel(without_new_sections),
+        model_name="test-model",
+        persist=False,
+    )
+
+    result = graph.invoke({"report_date": "2026-08-26"})
+
+    assert result["status"] == "partial"
+    assert "부동산" in result["markdown"].rsplit("\n", 1)[-1]
+    assert "포지션" in result["markdown"].rsplit("\n", 1)[-1]
