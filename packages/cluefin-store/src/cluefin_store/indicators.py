@@ -110,6 +110,41 @@ def _fred(
     )
 
 
+def _ecos_fx(
+    indicator_id: str,
+    name_ko: str,
+    name_en: str,
+    item_code: str,
+    unit: str,
+    description: str,
+    interpretation: str,
+    *,
+    higher_is: str = "context",
+    importance: int = 2,
+) -> IndicatorSpec:
+    """한국은행 일별 환율(ECOS 731Y001).
+
+    FRED의 원/달러(DEXKOUS)는 주 단위로 뒤늦게 올라와 오늘 값이 비어 있는 날이 대부분이다.
+    ECOS 일별 시리즈는 당일 매매기준율을 담고 있어 환율을 매일 채우려면 이쪽을 써야 한다.
+    """
+    return IndicatorSpec(
+        indicator_id=indicator_id,
+        name_ko=name_ko,
+        name_en=name_en,
+        domain="korea",
+        category="fx",
+        provider="ecos",
+        source_series=f"731Y001:D:{item_code}",
+        unit=unit,
+        frequency="daily",
+        higher_is=higher_is,
+        importance=importance,
+        description_ko=description,
+        interpretation_ko=interpretation,
+        source_url="https://ecos.bok.or.kr/",
+    )
+
+
 INDICATOR_CATALOG: tuple[IndicatorSpec, ...] = (
     _fred(
         "us_fed_funds",
@@ -331,19 +366,6 @@ INDICATOR_CATALOG: tuple[IndicatorSpec, ...] = (
         "daily",
         "risk_off",
         "강달러는 글로벌 유동성과 신흥시장 금융여건을 압박합니다.",
-        importance=3,
-    ),
-    _fred(
-        "usd_krw",
-        "원·달러 환율",
-        "KRW per USD",
-        "DEXKOUS",
-        "fx",
-        "KRW",
-        "daily",
-        "risk_off",
-        "상승은 원화 약세로 외국인 수급과 수입물가 부담을 키울 수 있습니다.",
-        domain="korea",
         importance=3,
     ),
     _fred(
@@ -843,6 +865,44 @@ INDICATOR_CATALOG: tuple[IndicatorSpec, ...] = (
         "한국은행 기준금리 일별 적용 수준",
         "월간 시리즈는 한 달 이상 지연되므로 발표 당일 반영되는 일별 시리즈를 사용합니다.",
         "https://ecos.bok.or.kr/",
+    ),
+    _ecos_fx(
+        "usd_krw",
+        "원·달러 환율",
+        "KRW per USD",
+        "0000001",
+        "KRW",
+        "한국은행이 매 영업일 고시하는 원/미국달러 매매기준율",
+        "상승은 원화 약세로 외국인 수급과 수입물가 부담을 키울 수 있습니다.",
+        higher_is="risk_off",
+        importance=3,
+    ),
+    _ecos_fx(
+        "jpy_krw",
+        "원·엔 환율",
+        "KRW per 100 JPY",
+        "0000002",
+        "KRW/100JPY",
+        "한국은행 일별 원/일본엔(100엔) 환율",
+        "엔화 강세는 위험회피 국면에서 함께 나타나며, 한국 수출기업의 가격 경쟁력에도 영향을 줍니다.",
+    ),
+    _ecos_fx(
+        "eur_krw",
+        "원·유로 환율",
+        "KRW per EUR",
+        "0000003",
+        "KRW",
+        "한국은행 일별 원/유로 환율",
+        "달러 대비 유로 강약과 함께 보면 원화 약세가 달러 요인인지 원화 요인인지 가늠할 수 있습니다.",
+    ),
+    _ecos_fx(
+        "cny_krw",
+        "원·위안 환율",
+        "KRW per CNY",
+        "0000053",
+        "KRW",
+        "한국은행 일별 원/위안 매매기준율",
+        "위안화와 원화는 같은 방향으로 움직이는 경향이 있어 중국 리스크를 함께 확인합니다.",
     ),
     IndicatorSpec(
         "kr_exports_20d",
@@ -2389,22 +2449,26 @@ def _derive_observations(
     for row in observations:
         values[row.indicator_id][row.period] = row.value
     derived: list[IndicatorObservation] = []
-    liquidity_spec = next(item for item in catalog if item.indicator_id == "fed_net_liquidity")
-    common_periods = set(values["fed_total_assets"]) & set(values["us_treasury_tga"]) & set(values["fed_overnight_rrp"])
-    derived.extend(
-        _observation(
-            liquidity_spec,
-            period,
-            values["fed_total_assets"][period]
-            - values["us_treasury_tga"][period]
-            - values["fed_overnight_rrp"][period],
-            run_id,
-            collected_at,
-            {"formula": "WALCL/1000 - WTREGEN/1000 - RRPONTSYD"},
-        )
-        for period in sorted(common_periods)
-    )
     catalog_by_id = {item.indicator_id: item for item in catalog}
+    # 카탈로그의 일부만 넘어올 수 있다(예: 환율만 도는 작업). 없는 파생 지표는 조용히 건너뛴다.
+    liquidity_spec = catalog_by_id.get("fed_net_liquidity")
+    if liquidity_spec is not None:
+        common_periods = (
+            set(values["fed_total_assets"]) & set(values["us_treasury_tga"]) & set(values["fed_overnight_rrp"])
+        )
+        derived.extend(
+            _observation(
+                liquidity_spec,
+                period,
+                values["fed_total_assets"][period]
+                - values["us_treasury_tga"][period]
+                - values["fed_overnight_rrp"][period],
+                run_id,
+                collected_at,
+                {"formula": "WALCL/1000 - WTREGEN/1000 - RRPONTSYD"},
+            )
+            for period in sorted(common_periods)
+        )
     for asset in ("btc", "eth", "xrp"):
         price_id, mvrv_id = f"{asset}_price_usd", f"{asset}_mvrv"
         realized_spec = catalog_by_id.get(f"{asset}_realized_price")
@@ -2449,8 +2513,8 @@ def _derive_observations(
             for period in sorted(set(values["eth_active_addresses"]) & set(values["eth_transactions"]))
             if values["eth_transactions"][period]
         )
-    eth_supply_spec = next(item for item in catalog if item.indicator_id == "protocol_token_inflation")
-    eth_periods = sorted(values["eth_supply"])
+    eth_supply_spec = catalog_by_id.get("protocol_token_inflation")
+    eth_periods = sorted(values["eth_supply"]) if eth_supply_spec is not None else []
     for index in range(30, len(eth_periods)):
         period = eth_periods[index]
         previous_period = eth_periods[index - 30]

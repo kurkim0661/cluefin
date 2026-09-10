@@ -130,6 +130,36 @@ def test_update_indicators_dry_run_prints_catalog_without_network() -> None:
     assert '"licensed"' in result.output
 
 
+def test_update_fx_dry_run_lists_daily_pairs_and_target_tables() -> None:
+    result = CliRunner().invoke(cli, ["update-fx", "--end-date", "2026-09-07", "--dry-run"])
+
+    assert result.exit_code == 0
+    assert '"USD/KRW"' in result.output
+    assert '"JPY/KRW"' in result.output
+    assert '"731Y001:D:0000001"' in result.output
+    assert '"market.exchange_rates"' in result.output
+    # 매일 도는 작업이므로 기본 조회 창은 짧게 둔다.
+    assert '"start_date": "2026-08-08"' in result.output
+
+
+def test_update_fx_skips_the_derived_table_when_asked() -> None:
+    result = CliRunner().invoke(cli, ["update-fx", "--skip-derive", "--dry-run"])
+
+    assert result.exit_code == 0
+    assert '"market.exchange_rates"' not in result.output
+    assert '"market.indicator_observations"' in result.output
+
+
+def test_update_fx_rejects_a_window_that_ends_before_it_starts() -> None:
+    result = CliRunner().invoke(
+        cli,
+        ["update-fx", "--start-date", "2026-09-07", "--end-date", "2026-09-01", "--dry-run"],
+    )
+
+    assert result.exit_code != 0
+    assert "start-date" in result.output
+
+
 def test_import_indicators_dry_run_validates_normalized_csv(tmp_path) -> None:
     source = tmp_path / "licensed.csv"
     source.write_text(

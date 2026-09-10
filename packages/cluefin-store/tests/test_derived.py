@@ -76,11 +76,12 @@ def _store() -> FakeStore:
                     "FROM market.indicator_observations",
                     FakeResult(
                         [
-                            ("usd_krw", "fred", "2026-08-27", 1375.5),
-                            ("usd_krw", "fred", "2026-08-28", 1379.41),
-                            ("usd_krw", "fred", "2026-08-31", None),
+                            ("usd_krw", "2026-08-27", 1375.5, "fred"),
+                            ("usd_krw", "2026-08-28", 1379.41, "ecos"),
+                            ("usd_krw", "2026-08-31", None, "ecos"),
+                            ("jpy_krw", "2026-08-28", 863.12, "ecos"),
                         ],
-                        ["indicator_id", "provider", "period", "value"],
+                        ["indicator_id", "period", "value", "provider"],
                     ),
                 ),
             ]
@@ -96,7 +97,7 @@ def test_derive_tables_builds_all_three_from_existing_rows() -> None:
     assert summary["rows"] == {
         "market.market_calendar": 3,
         "market.stock_master": 2,
-        "market.exchange_rates": 2,
+        "market.exchange_rates": 3,
     }
     assert set(store.inserted) == {"market.market_calendar", "market.stock_master", "market.exchange_rates"}
 
@@ -138,11 +139,41 @@ def test_exchange_rates_copy_indicator_values_and_drop_nulls() -> None:
 
     derive_tables(store, tables=("exchange_rates",), updated_at=UPDATED_AT)
 
-    rates = store.inserted["market.exchange_rates"]
-    assert [row.trade_date for row in rates] == [date(2026, 8, 27), date(2026, 8, 28)]
-    assert rates[-1].rate == Decimal("1379.41")
-    assert (rates[-1].base_currency, rates[-1].quote_currency) == ("USD", "KRW")
-    assert rates[-1].provider == "fred"
+    rates = {(row.base_currency, row.trade_date): row for row in store.inserted["market.exchange_rates"]}
+    # 값이 없는 2026-08-31은 버린다.
+    assert sorted(rates) == [
+        ("JPY", date(2026, 8, 28)),
+        ("USD", date(2026, 8, 27)),
+        ("USD", date(2026, 8, 28)),
+    ]
+    usd = rates[("USD", date(2026, 8, 28))]
+    assert usd.rate == Decimal("1379.41")
+    assert usd.quote_currency == "KRW"
+    # 공급자는 관측을 가져온 원천을 그대로 남긴다.
+    assert usd.provider == "ecos"
+    assert rates[("USD", date(2026, 8, 27))].provider == "fred"
+
+
+def test_exchange_rates_convert_per_100_yen_quote_to_one_yen() -> None:
+    store = _store()
+
+    derive_tables(store, tables=("exchange_rates",), updated_at=UPDATED_AT)
+
+    jpy = next(row for row in store.inserted["market.exchange_rates"] if row.base_currency == "JPY")
+    # ECOS는 100엔당 863.12원으로 고시한다. 환율 테이블은 기준통화 1단위 기준이어야 한다.
+    assert jpy.rate == Decimal("8.6312")
+
+
+def test_exchange_rates_keep_one_row_per_pair_and_day_when_the_source_changes() -> None:
+    store = _store()
+
+    derive_tables(store, tables=("exchange_rates",), updated_at=UPDATED_AT)
+
+    query = next(sql for sql in store.client().queries if "market.indicator_observations" in sql)
+    # 원천을 FRED에서 한국은행으로 옮기면 같은 날짜에 공급자만 다른 관측이 남는다.
+    # 하루 한 값을 유지하려면 가장 최근에 수집된 관측만 골라야 한다.
+    assert "GROUP BY indicator_id, period" in query
+    assert "argMax(value, collected_at)" in query
 
 
 def test_dry_run_counts_without_inserting() -> None:

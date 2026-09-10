@@ -35,11 +35,17 @@ class ResearchDataRepository:
             """
         )
         start = report_date - timedelta(days=400)
+        # 지표의 원천이 바뀌면(예: 원/달러를 FRED에서 한국은행으로 옮김) 같은 날짜에 공급자만 다른
+        # 관측이 남는다. 직전 값 대비 변화를 계산하려면 하루 한 값이어야 하므로 최근 수집분만 고른다.
         observations = self._rows(
             f"""
-            SELECT indicator_id, toString(period) AS observed_on, value, provider
+            SELECT indicator_id,
+                   toString(period) AS observed_on,
+                   argMax(value, collected_at) AS value,
+                   argMax(provider, collected_at) AS provider
             FROM market.indicator_observations FINAL
             WHERE period BETWEEN toDate('{start.isoformat()}') AND toDate('{report_date.isoformat()}')
+            GROUP BY indicator_id, period
             ORDER BY indicator_id, period
             """
         )

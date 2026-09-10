@@ -196,6 +196,49 @@ def test_ecos_provider_normalizes_bank_of_korea_observations() -> None:
     assert "722Y001/D/20260801/20260826/0101000" in session.calls[0][0]
 
 
+def test_exchange_rates_come_from_the_bank_of_korea_daily_series() -> None:
+    pairs = {spec.indicator_id: spec for spec in INDICATOR_CATALOG if spec.category == "fx" and spec.domain == "korea"}
+
+    assert set(pairs) == {"usd_krw", "jpy_krw", "eur_krw", "cny_krw"}
+    for spec in pairs.values():
+        # FRED의 원/달러는 주 단위로 늦게 올라와 당일 값이 비어 있다. 매일 채우려면 ECOS 일별 시리즈여야 한다.
+        assert spec.provider == "ecos"
+        assert spec.frequency == "daily"
+        assert spec.source_series.startswith("731Y001:D:")
+    # 100엔당 고시라는 사실이 단위에 드러나야 파생 환율 테이블의 배수와 어긋나지 않는다.
+    assert pairs["jpy_krw"].unit == "KRW/100JPY"
+
+
+def test_ecos_provider_collects_todays_exchange_rate() -> None:
+    session = QueueSession(
+        [
+            FakeResponse(
+                payload={
+                    "StatisticSearch": {
+                        "row": [
+                            {
+                                "TIME": "20260907",
+                                "DATA_VALUE": "1,355.2",
+                                "UNIT_NAME": "원",
+                                "ITEM_NAME1": "원/미국달러(매매기준율)",
+                            }
+                        ]
+                    }
+                }
+            )
+        ]
+    )
+    provider = EcosProvider(api_key="sample", session=session)
+
+    rows = provider.collect((_spec("usd_krw"),), date(2026, 9, 1), date(2026, 9, 7), RUN_ID, COLLECTED_AT)
+
+    # 고시값에는 천 단위 구분기호가 붙어 온다.
+    assert rows[0].value == 1355.2
+    assert rows[0].period == date(2026, 9, 7)
+    assert rows[0].provider == "ecos"
+    assert "731Y001/D/20260901/20260907/0000001" in session.calls[0][0]
+
+
 def test_ecos_provider_treats_empty_window_as_no_rows() -> None:
     session = QueueSession(
         [FakeResponse(payload={"RESULT": {"CODE": "INFO-200", "MESSAGE": "해당하는 데이터가 없습니다."}})]
@@ -503,6 +546,16 @@ def test_derived_metrics_skip_assets_without_source_values() -> None:
     assert "btc_realized_price" in derived
     assert "eth_realized_price" not in derived
     assert "xrp_nupl" not in derived
+
+
+def test_derived_metrics_tolerate_a_partial_catalog() -> None:
+    from cluefin_store.indicators import _derive_observations
+
+    # 환율만 도는 작업처럼 카탈로그의 일부만 넘어오면, 그 안에 없는 파생 지표는 건너뛰어야 한다.
+    fx_only = tuple(spec for spec in INDICATOR_CATALOG if spec.category == "fx")
+    observations = [_observation_record("usd_krw", date(2026, 9, 7), 1355.2)]
+
+    assert _derive_observations(observations, fx_only, RUN_ID, COLLECTED_AT) == []
 
 
 def test_ecos_monthly_series_still_uses_lookback_window() -> None:

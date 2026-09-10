@@ -8,10 +8,11 @@ import click
 
 from cluefin_store.analysis import PatternAnalysisConfig, pattern_collection_plan
 from cluefin_store.db import ClickHouseSettings, ClickHouseStore
-from cluefin_store.derived import DERIVED_TABLES, derive_tables
+from cluefin_store.derived import DERIVED_TABLES, EXCHANGE_RATE_INDICATORS, derive_tables
 from cluefin_store.env import load_env_file
 from cluefin_store.indicators import (
     INDICATOR_CATALOG,
+    IndicatorSpec,
     catalog_summary,
     collect_market_indicators,
     default_indicator_providers,
@@ -111,6 +112,94 @@ def update_indicators_command(
         strict=strict,
     )
     click.echo(json.dumps(summary, ensure_ascii=False, indent=2, sort_keys=True))
+
+
+@cli.command(name="update-fx")
+@click.option("--start-date", type=click.DateTime(formats=["%Y-%m-%d"]))
+@click.option("--end-date", type=click.DateTime(formats=["%Y-%m-%d"]))
+@click.option(
+    "--lookback-days",
+    type=int,
+    default=30,
+    show_default=True,
+    help="Days before --end-date to request when --start-date is omitted.",
+)
+@click.option("--strict", is_flag=True, help="Fail the run when the source errors.")
+@click.option("--skip-derive", is_flag=True, help="Collect observations without rebuilding market.exchange_rates.")
+@click.option("--dry-run", is_flag=True, help="Print the collection plan without network or database access.")
+def update_fx_command(start_date, end_date, lookback_days: int, strict: bool, skip_derive: bool, dry_run: bool) -> None:
+    """Collect daily exchange rates and republish market.exchange_rates.
+
+    A daily job only needs a short window: the Bank of Korea publishes each business day and
+    does not revise, so the default lookback just covers holidays and a missed run or two.
+    """
+    if lookback_days < 0:
+        raise click.BadParameter("lookback-days must not be negative", param_hint="--lookback-days")
+    resolved_end = date(end_date.year, end_date.month, end_date.day) if end_date else date.today()
+    resolved_start = (
+        date(start_date.year, start_date.month, start_date.day)
+        if start_date
+        else resolved_end - timedelta(days=lookback_days)
+    )
+    if resolved_start > resolved_end:
+        raise click.BadParameter("start-date must not be after end-date", param_hint="--start-date")
+
+    specs = _fx_indicator_specs()
+    tables = ["market.indicator_definitions", "market.indicator_observations"]
+    if not skip_derive:
+        tables.append("market.exchange_rates")
+    plan = {
+        "start_date": resolved_start.isoformat(),
+        "end_date": resolved_end.isoformat(),
+        "indicators": [
+            {"indicator_id": spec.indicator_id, "provider": spec.provider, "source_series": spec.source_series}
+            for spec in specs
+        ],
+        "pairs": [f"{base}/{quote}" for _, base, quote, _ in EXCHANGE_RATE_INDICATORS],
+        "tables": tables,
+        "strict": strict,
+    }
+    if dry_run:
+        click.echo(json.dumps(plan, ensure_ascii=False, indent=2, sort_keys=True))
+        return
+
+    store = ClickHouseStore()
+    store.apply_schema()
+    run_id = uuid4()
+    collected_at = datetime.now()
+    provider_names = {spec.provider for spec in specs}
+    summary = collect_market_indicators(
+        store=store,
+        providers=tuple(
+            provider
+            for provider in default_indicator_providers(store=store)
+            if provider.provider_name in provider_names
+        ),
+        start_date=resolved_start,
+        end_date=resolved_end,
+        run_id=run_id,
+        collected_at=collected_at,
+        catalog=specs,
+        strict=strict,
+    )
+    if not skip_derive:
+        summary["exchange_rates"] = derive_tables(
+            store,
+            tables=("exchange_rates",),
+            run_id=run_id,
+            updated_at=collected_at,
+        )["rows"]["market.exchange_rates"]
+    click.echo(json.dumps(summary, ensure_ascii=False, indent=2, sort_keys=True))
+
+
+def _fx_indicator_specs() -> tuple[IndicatorSpec, ...]:
+    """market.exchange_rates가 발행하는 통화쌍의 원천 지표만 고른다."""
+    wanted = {indicator_id for indicator_id, *_ in EXCHANGE_RATE_INDICATORS}
+    specs = tuple(spec for spec in INDICATOR_CATALOG if spec.indicator_id in wanted)
+    missing = wanted - {spec.indicator_id for spec in specs}
+    if missing:
+        raise click.ClickException(f"카탈로그에 없는 환율 지표: {', '.join(sorted(missing))}")
+    return specs
 
 
 @cli.command(name="update-real-estate")

@@ -16,8 +16,14 @@ from cluefin_store.models import ExchangeRate, MarketCalendarDay, StockMasterEnt
 # 일봉에는 국가 컬럼이 없어 공급자로 가른다. 유니버스에 국가가 있으면 그 값을 우선한다.
 PROVIDER_COUNTRIES = {"toss": "KR", "toss_us": "US"}
 COUNTRY_CURRENCIES = {"KR": "KRW", "US": "USD"}
-# 환율로 옮길 지표. (지표 ID, 기준통화, 상대통화)
-EXCHANGE_RATE_INDICATORS = (("usd_krw", "USD", "KRW"),)
+# 환율로 옮길 지표. (지표 ID, 기준통화, 상대통화, 단위 배수)
+# 배수는 지표의 고시 단위를 기준통화 1단위로 되돌린다. 원/엔은 100엔당 가격으로 고시된다.
+EXCHANGE_RATE_INDICATORS = (
+    ("usd_krw", "USD", "KRW", Decimal(1)),
+    ("jpy_krw", "JPY", "KRW", Decimal("0.01")),
+    ("eur_krw", "EUR", "KRW", Decimal(1)),
+    ("cny_krw", "CNY", "KRW", Decimal(1)),
+)
 
 DERIVED_TABLES = ("market_calendar", "stock_master", "exchange_rates")
 
@@ -136,17 +142,23 @@ def _stock_master_rows(store: Any, updated_at: datetime) -> list[StockMasterEntr
 
 
 def _exchange_rate_rows(store: Any, run_id: UUID, collected_at: datetime) -> list[ExchangeRate]:
-    wanted = {indicator_id: (base, quote) for indicator_id, base, quote in EXCHANGE_RATE_INDICATORS}
+    wanted = {indicator_id: (base, quote, scale) for indicator_id, base, quote, scale in EXCHANGE_RATE_INDICATORS}
     if not wanted:
         return []
     id_list = ", ".join(f"'{indicator_id}'" for indicator_id in wanted)
+    # 한 통화쌍의 원천이 바뀌면(예: 원/달러를 FRED에서 한국은행으로 옮김) 같은 날짜에 공급자만 다른
+    # 관측이 남는다. 환율 테이블은 하루 한 값이어야 하므로 가장 최근에 수집된 관측만 고른다.
     rows = _query(
         store,
         f"""
-        SELECT indicator_id, provider, toString(period) AS period, value
+        SELECT indicator_id,
+               toString(period) AS period,
+               argMax(value, collected_at) AS value,
+               argMax(provider, collected_at) AS provider
         FROM market.indicator_observations FINAL
         WHERE indicator_id IN ({id_list})
-        ORDER BY period
+        GROUP BY indicator_id, period
+        ORDER BY indicator_id, period
         """,
     )
     rates: list[ExchangeRate] = []
@@ -154,14 +166,14 @@ def _exchange_rate_rows(store: Any, run_id: UUID, collected_at: datetime) -> lis
         value = row.get("value")
         if value is None:
             continue
-        base, quote = wanted[str(row["indicator_id"])]
+        base, quote, scale = wanted[str(row["indicator_id"])]
         rates.append(
             ExchangeRate(
                 trade_date=date.fromisoformat(str(row["period"])),
                 provider=str(row.get("provider") or "derived"),
                 base_currency=base,
                 quote_currency=quote,
-                rate=Decimal(str(value)),
+                rate=Decimal(str(value)) * scale,
                 run_id=run_id,
                 collected_at=collected_at,
             )

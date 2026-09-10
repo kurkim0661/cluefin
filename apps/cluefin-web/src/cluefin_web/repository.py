@@ -92,15 +92,18 @@ class DashboardRepository:
                 "availability",
             ],
         )
+        # 한 지표의 원천이 바뀌면(예: 원/달러를 FRED에서 한국은행으로 옮김) 같은 날짜에 공급자만
+        # 다른 관측이 남는다. 카드와 추이선은 하루 한 값을 전제하므로 가장 최근 수집분만 고른다.
         observations = self._query_rows(
             """
             SELECT
                 indicator_id,
                 toString(period) AS observed_on,
-                value,
-                provider
+                argMax(value, collected_at) AS value,
+                argMax(provider, collected_at) AS provider
             FROM market.indicator_observations FINAL
             WHERE period >= today() - 400
+            GROUP BY indicator_id, period
             ORDER BY indicator_id ASC, period ASC
             """,
             fallback_columns=["indicator_id", "observed_on", "value", "provider"],
