@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import time
 from datetime import date, datetime, timezone
 from decimal import ROUND_HALF_UP, Decimal
 from typing import Any
@@ -12,6 +13,11 @@ from cluefin_store.ingestion import RankedSymbol
 from cluefin_store.models import DailyOhlcv, _quantize_price
 
 BASE_URL = "https://openapi.tossinvest.com"
+# 1년치 백필은 종목당 캔들 페이지를 여러 번 넘기므로 한 번에 수백 건이 나간다. Toss는 그 속도에
+# 429로 답하는데, 재시도가 없으면 백필 전체가 중간에 죽는다. 대기 시간은 배로 늘린다.
+RATE_LIMIT_MAX_RETRIES = 5
+RATE_LIMIT_BASE_DELAY = 1.0
+RATE_LIMIT_MAX_DELAY = 30.0
 
 
 class TossMarketDataProvider:
@@ -120,14 +126,22 @@ class TossMarketDataProvider:
         return {item["symbol"]: item.get("name") or item["symbol"] for item in result}
 
     def _get(self, path: str, *, params: dict[str, Any]) -> dict:
-        response = self.session.get(
-            f"{self.base_url}{path}",
-            headers={"Authorization": f"Bearer {self._token()}"},
-            params=params,
-            timeout=self.timeout,
-        )
-        response.raise_for_status()
-        return response.json()
+        for attempt in range(RATE_LIMIT_MAX_RETRIES + 1):
+            response = self.session.get(
+                f"{self.base_url}{path}",
+                headers={"Authorization": f"Bearer {self._token()}"},
+                params=params,
+                timeout=self.timeout,
+            )
+            if getattr(response, "status_code", 200) != 429 or attempt == RATE_LIMIT_MAX_RETRIES:
+                response.raise_for_status()
+                return response.json()
+            self._sleep(_retry_delay(response, attempt))
+        raise AssertionError("unreachable")  # pragma: no cover
+
+    def _sleep(self, seconds: float) -> None:
+        """테스트에서 실제로 기다리지 않도록 갈아끼우는 자리."""
+        time.sleep(seconds)
 
     def _token(self) -> str:
         if self._access_token is not None:
@@ -145,6 +159,19 @@ class TossMarketDataProvider:
         payload = response.json()
         self._access_token = payload["access_token"]
         return self._access_token
+
+
+def _retry_delay(response: Any, attempt: int) -> float:
+    """서버가 Retry-After로 알려준 시간을 우선 쓰고, 없으면 지수 백오프로 물러난다."""
+    header = getattr(response, "headers", None) or {}
+    retry_after = header.get("Retry-After")
+    if retry_after is not None:
+        try:
+            return min(max(float(retry_after), 0.0), RATE_LIMIT_MAX_DELAY)
+        except (TypeError, ValueError):
+            # HTTP 날짜 형식으로 올 수도 있다. 해석에 실패하면 백오프로 넘어간다.
+            pass
+    return min(RATE_LIMIT_BASE_DELAY * (2**attempt), RATE_LIMIT_MAX_DELAY)
 
 
 def _parse_candle(symbol: str, candle: dict) -> DailyOhlcv:
