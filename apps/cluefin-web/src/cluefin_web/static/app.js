@@ -21,6 +21,7 @@ const state = {
   chartWindow: 120,
   chartOffset: 0,
   chartYScale: 1,
+  chartYOffset: 0,
   chartDrag: null,
   chartYDrag: null,
   enabledPatternTypes: new Set(),
@@ -40,6 +41,10 @@ const state = {
 
 const CHART_Y_SCALE_MIN = 0.35;
 const CHART_Y_SCALE_MAX = 2.5;
+// 세로 이동 한계. 화면 높이의 ±2배까지만 허용해 차트를 완전히 잃어버리지 않게 한다.
+const CHART_Y_OFFSET_LIMIT = 2;
+// 가격 패널의 위아래 여백 비율. 확대해도 캔들이 축에 붙지 않게 한다.
+const CHART_Y_PAD_RATIO = 0.08;
 
 const formatPercent = value => {
   if (value === null || value === undefined || Number.isNaN(Number(value))) {
@@ -1230,6 +1235,7 @@ async function loadSymbolChart(symbol) {
   const response = await fetch(`/api/symbols/${encodeURIComponent(symbol)}/chart`);
   state.chart = await response.json();
   state.chartOffset = 0;
+  state.chartYOffset = 0;
   state.chartDrag = null;
   state.enabledPatternTypes = new Set((state.chart.patterns || []).map(pattern => pattern.pattern_name));
   state.selectedPatternEventKey = "";
@@ -1291,7 +1297,14 @@ function renderCandlestickChart(chart) {
   ]).map(Number).filter(Number.isFinite);
   const minPrice = Math.min(...priceValues);
   const maxPrice = Math.max(...priceValues);
-  const [scaledMinPrice, scaledMaxPrice] = applyYScale(minPrice, maxPrice);
+  const candleValues = visibleCandles
+    .flatMap(candle => [candle.high, candle.low])
+    .map(Number)
+    .filter(Number.isFinite);
+  const [scaledMinPrice, scaledMaxPrice] = applyYScale(minPrice, maxPrice, {
+    low: Math.min(...candleValues),
+    high: Math.max(...candleValues),
+  });
   const yPrice = value => scaleLinear(Number(value), scaledMinPrice, scaledMaxPrice, priceBox.bottom, priceBox.top);
   const xAt = index => scaleLinear(index, 0, Math.max(visibleCandles.length - 1, 1), plotBox.left, plotBox.right);
   const volumeMax = Math.max(...visibleCandles.map(candle => Number(candle.volume || 0)), 1);
@@ -1332,13 +1345,25 @@ function clamp(value, min, max) {
   return Math.max(min, Math.min(max, value));
 }
 
-function applyYScale(minPrice, maxPrice) {
-  const rawRange = maxPrice - minPrice || 1;
-  const center = (minPrice + maxPrice) / 2;
+// 보이는 가격 창 [아래, 위]를 구한다. 세로 확대(chartYScale)와 세로 이동(chartYOffset)을 함께 반영한다.
+function applyYScale(minPrice, maxPrice, focus = {}) {
+  const dataRange = Math.max(maxPrice - minPrice, 0);
+  const rawRange = dataRange || Math.abs(maxPrice) * 0.02 || 1;
   const scale = clamp(Number(state.chartYScale || 1), CHART_Y_SCALE_MIN, CHART_Y_SCALE_MAX);
-  const range = rawRange * scale;
-  const pad = range * 0.08 || 1;
-  return [center - range / 2 - pad, center + range / 2 + pad];
+  const viewRange = rawRange * scale * (1 + CHART_Y_PAD_RATIO * 2);
+  const offset = clamp(Number(state.chartYOffset) || 0, -CHART_Y_OFFSET_LIMIT, CHART_Y_OFFSET_LIMIT);
+  state.chartYOffset = offset;
+  // 데이터 폭(minPrice~maxPrice)에는 EMA200·패턴 목표가처럼 캔들에서 멀리 떨어진 값도 섞인다. 그
+  // 중앙을 기준으로 세로 확대를 하면 캔들이 화면 밖으로 밀려나므로, 좁게 확대할수록 기준점을 캔들
+  // 고·저의 중앙으로 옮긴다. 조건문으로 두 기준을 갈라 쓰면 경계를 넘는 순간 화면이 튀니 비율로 섞는다.
+  const cover = dataRange > 0 ? clamp(viewRange / dataRange, 0, 1) : 1;
+  const focusLow = Number.isFinite(focus.low) ? focus.low : minPrice;
+  const focusHigh = Number.isFinite(focus.high) ? focus.high : maxPrice;
+  const focusCenter = (focusLow + focusHigh) / 2;
+  const anchor = focusCenter + ((minPrice + maxPrice) / 2 - focusCenter) * cover;
+  // 화면 중앙은 항상 실제 데이터 구간 안에 두어, 아무리 끌어도 빈 화면으로 넘어가지 않게 한다.
+  const center = clamp(anchor + offset * viewRange, minPrice, maxPrice);
+  return [center - viewRange / 2, center + viewRange / 2];
 }
 
 function setChartYScale(value, options = {}) {
@@ -2089,7 +2114,9 @@ function handleChartPointerDown(event) {
   state.chartDrag = {
     pointerId: event.pointerId,
     startX: event.clientX,
+    startY: event.clientY,
     dragStartOffset: state.chartOffset,
+    dragStartYOffset: state.chartYOffset,
   };
 }
 
@@ -2116,6 +2143,14 @@ function handleChartPointerMove(event) {
     0,
     Math.max(candles.length - state.chartWindow, 0)
   );
+  // 가격 패널 높이가 보이는 가격 창 하나에 대응하므로, 끈 픽셀을 그 비율로 나누면 커서와 1:1로 움직인다.
+  const { priceBox } = chartInteractionBounds(canvas);
+  const priceHeight = Math.max(priceBox.bottom - priceBox.top, 1);
+  state.chartYOffset = clamp(
+    drag.dragStartYOffset + (event.clientY - drag.startY) / priceHeight,
+    -CHART_Y_OFFSET_LIMIT,
+    CHART_Y_OFFSET_LIMIT
+  );
   renderCandlestickChart(state.chart);
 }
 
@@ -2131,7 +2166,8 @@ function handleChartPointerUp(event) {
 
 function resetChartView() {
   state.chartOffset = 0;
-  renderCandlestickChart(state.chart);
+  state.chartYOffset = 0;
+  setChartYScale(1);
 }
 
 function initializeSortableTables() {
@@ -2183,6 +2219,7 @@ document.querySelector("#chart-y-zoom").addEventListener("input", event => {
   setChartYScale(event.target.value);
 });
 document.querySelector("#chart-y-reset").addEventListener("click", () => {
+  state.chartYOffset = 0;
   setChartYScale(1);
 });
 document.querySelector("#pattern-event-select").addEventListener("change", event => {
